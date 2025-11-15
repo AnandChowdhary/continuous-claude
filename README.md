@@ -12,7 +12,7 @@ This script runs Claude Code in iterations until multi-step tasks are complete:
 - It waits for all required PR checks and code reviews to complete
 - Once checks pass and reviews are approved, the PR is merged
 - This process repeats until your task is complete
-- A `SHARED_TASK_NOTES.md` file coordinates work across iterations between humans and AI
+- A `SHARED_TASK_NOTES.md` file acts as a relay baton, passing context and next steps between iterations
 
 ## 🚀 Quick start
 
