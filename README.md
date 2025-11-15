@@ -16,7 +16,7 @@ For tasks that require multiple iterations to complete, this script runs Claude 
 
 ## 🚀 Quick start
 
-Make sure you have Claude Code CLI and GitHub CLI installed and authenticated. Then:
+Prerequisites: Install and authenticate both the Claude Code CLI and GitHub CLI (`gh`). Then:
 
 ```bash
 # Download the script
