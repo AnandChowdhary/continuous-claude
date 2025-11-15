@@ -316,20 +316,23 @@ merge_pr_and_cleanup() {
     return 0
 }
 
-continuous_claude_commit() {
+create_iteration_branch() {
     local iteration_display="$1"
     local iteration_num="$2"
     
     if ! git rev-parse --git-dir > /dev/null 2>&1; then
-        return 0
-    fi
-
-    if git diff --quiet && git diff --cached --quiet; then
-        echo "🫙 $iteration_display No changes detected" >&2
+        echo ""
         return 0
     fi
 
     local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    
+    if [[ "$current_branch" == ${GIT_BRANCH_PREFIX}* ]]; then
+        echo "⚠️  $iteration_display Already on iteration branch: $current_branch" >&2
+        git checkout main >/dev/null 2>&1 || return 1
+        current_branch="main"
+    fi
+    
     local date_str=$(date +%Y-%m-%d)
     
     local random_hash
@@ -348,20 +351,41 @@ continuous_claude_commit() {
     
     if ! git checkout -b "$branch_name" >/dev/null 2>&1; then
         echo "⚠️  $iteration_display Failed to create branch" >&2
+        echo ""
         return 1
+    fi
+    
+    echo "$branch_name"
+    return 0
+}
+
+continuous_claude_commit() {
+    local iteration_display="$1"
+    local branch_name="$2"
+    local main_branch="$3"
+    
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        return 0
+    fi
+
+    if git diff --quiet && git diff --cached --quiet; then
+        echo "🫙 $iteration_display No changes detected, cleaning up branch..." >&2
+        git checkout "$main_branch" >/dev/null 2>&1
+        git branch -D "$branch_name" >/dev/null 2>&1 || true
+        return 0
     fi
     
     echo "💬 $iteration_display Committing changes..." >&2
     
     if ! claude -p "$PROMPT_COMMIT_MESSAGE" --allowedTools "Bash(git)" --dangerously-skip-permissions >/dev/null 2>&1; then
         echo "⚠️  $iteration_display Failed to commit changes" >&2
-        git checkout "$current_branch" >/dev/null 2>&1
+        git checkout "$main_branch" >/dev/null 2>&1
         return 1
     fi
 
     if ! git diff --quiet || ! git diff --cached --quiet; then
         echo "⚠️  $iteration_display Commit command ran but changes still present" >&2
-        git checkout "$current_branch" >/dev/null 2>&1
+        git checkout "$main_branch" >/dev/null 2>&1
         return 1
     fi
 
@@ -374,22 +398,22 @@ continuous_claude_commit() {
     echo "📤 $iteration_display Pushing branch..." >&2
     if ! git push -u origin "$branch_name" >/dev/null 2>&1; then
         echo "⚠️  $iteration_display Failed to push branch" >&2
-        git checkout "$current_branch" >/dev/null 2>&1
+        git checkout "$main_branch" >/dev/null 2>&1
         return 1
     fi
 
     echo "🔨 $iteration_display Creating pull request..." >&2
     local pr_output
-    if ! pr_output=$(gh pr create --repo "$GITHUB_OWNER/$GITHUB_REPO" --title "$commit_title" --body "$commit_body" --base main 2>&1); then
+    if ! pr_output=$(gh pr create --repo "$GITHUB_OWNER/$GITHUB_REPO" --title "$commit_title" --body "$commit_body" --base "$main_branch" 2>&1); then
         echo "⚠️  $iteration_display Failed to create PR: $pr_output" >&2
-        git checkout "$current_branch" >/dev/null 2>&1
+        git checkout "$main_branch" >/dev/null 2>&1
         return 1
     fi
 
     local pr_number=$(echo "$pr_output" | grep -oE '(pull/|#)[0-9]+' | grep -oE '[0-9]+' | head -n 1)
     if [ -z "$pr_number" ]; then
         echo "⚠️  $iteration_display Failed to extract PR number from: $pr_output" >&2
-        git checkout "$current_branch" >/dev/null 2>&1
+        git checkout "$main_branch" >/dev/null 2>&1
         return 1
     fi
 
@@ -397,19 +421,19 @@ continuous_claude_commit() {
     sleep 5
     if ! wait_for_pr_checks "$pr_number" "$GITHUB_OWNER" "$GITHUB_REPO" "$iteration_display"; then
         echo "⚠️  $iteration_display PR checks failed or timed out" >&2
-        git checkout "$current_branch" >/dev/null 2>&1
+        git checkout "$main_branch" >/dev/null 2>&1
         return 1
     fi
 
-    if ! merge_pr_and_cleanup "$pr_number" "$GITHUB_OWNER" "$GITHUB_REPO" "$branch_name" "$iteration_display" "$current_branch"; then
+    if ! merge_pr_and_cleanup "$pr_number" "$GITHUB_OWNER" "$GITHUB_REPO" "$branch_name" "$iteration_display" "$main_branch"; then
         return 1
     fi
 
     echo "✅ $iteration_display PR merged and local branch cleaned up" >&2
     
     # Ensure we're back on the main branch
-    if ! git checkout "$current_branch" >/dev/null 2>&1; then
-        echo "⚠️  $iteration_display Failed to checkout $current_branch" >&2
+    if ! git checkout "$main_branch" >/dev/null 2>&1; then
+        echo "⚠️  $iteration_display Failed to checkout $main_branch" >&2
         return 1
     fi
     
@@ -489,7 +513,8 @@ handle_iteration_error() {
 handle_iteration_success() {
     local iteration_display="$1"
     local result="$2"
-    local iteration_num="$3"
+    local branch_name="$3"
+    local main_branch="$4"
     
     echo "📝 $iteration_display Output:" >&2
     local result_text=$(echo "$result" | jq -r '.result // empty')
@@ -508,7 +533,7 @@ handle_iteration_success() {
 
     echo "✅ $iteration_display Work completed" >&2
     if [ "$ENABLE_COMMITS" = "true" ]; then
-        if ! continuous_claude_commit "$iteration_display" "$iteration_num"; then
+        if ! continuous_claude_commit "$iteration_display" "$branch_name" "$main_branch"; then
             error_count=$((error_count + 1))
             extra_iterations=$((extra_iterations + 1))
             echo "❌ $iteration_display PR merge queue failed ($error_count consecutive errors)" >&2
@@ -520,6 +545,11 @@ handle_iteration_success() {
         fi
     else
         echo "⏭️  $iteration_display Skipping commits (--disable-commits flag set)" >&2
+        # Clean up branch if commits are disabled
+        if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
+            git checkout "$main_branch" >/dev/null 2>&1
+            git branch -D "$branch_name" >/dev/null 2>&1 || true
+        fi
     fi
     
     error_count=0
@@ -535,6 +565,23 @@ execute_single_iteration() {
     
     local iteration_display=$(get_iteration_display $iteration_num $MAX_RUNS $extra_iterations)
     echo "🔄 $iteration_display Starting iteration..." >&2
+
+    # Get current branch and create iteration branch
+    local main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    local branch_name=""
+    
+    if [ "$ENABLE_COMMITS" = "true" ]; then
+        branch_name=$(create_iteration_branch "$iteration_display" "$iteration_num")
+        if [ $? -ne 0 ] || [ -z "$branch_name" ]; then
+            if git rev-parse --git-dir > /dev/null 2>&1; then
+                echo "❌ $iteration_display Failed to create branch" >&2
+                handle_iteration_error "$iteration_display" "exit_code" ""
+                return 1
+            fi
+            # Not a git repo, continue without branch
+            branch_name=""
+        fi
+    fi
 
     local enhanced_prompt="$PROMPT_WORKFLOW_CONTEXT
 
@@ -568,17 +615,27 @@ $notes_content
 
     local result
     if ! result=$(run_claude_iteration "$enhanced_prompt" "$ADDITIONAL_FLAGS" "$ERROR_LOG"); then
+        # Clean up branch on error
+        if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
+            git checkout "$main_branch" >/dev/null 2>&1
+            git branch -D "$branch_name" >/dev/null 2>&1 || true
+        fi
         handle_iteration_error "$iteration_display" "exit_code" ""
         return 1
     fi
     
     local parse_result=$(parse_claude_result "$result")
     if [ "$?" != "0" ]; then
+        # Clean up branch on error
+        if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
+            git checkout "$main_branch" >/dev/null 2>&1
+            git branch -D "$branch_name" >/dev/null 2>&1 || true
+        fi
         handle_iteration_error "$iteration_display" "$parse_result" "$result"
         return 1
     fi
     
-    handle_iteration_success "$iteration_display" "$result" "$iteration_num"
+    handle_iteration_success "$iteration_display" "$result" "$branch_name" "$main_branch"
     return 0
 }
 
