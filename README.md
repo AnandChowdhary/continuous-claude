@@ -4,7 +4,7 @@ An automated workflow that runs Claude Code in a continuous loop, creating and m
 
 ## ⚙️ How it works
 
-When you have a task like "Add unit tests until all code is covered", you want to run Claude Code repeatedly until all code is covered. This script does that for you:
+For tasks that require multiple iterations to complete, this script runs Claude Code repeatedly until done:
 
 - Claude Code runs in a loop based on your prompt
 - All changes are committed to a new branch
