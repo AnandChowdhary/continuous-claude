@@ -1,7 +1,7 @@
 # 🔂 Continuous Claude
 
 <details data-embed="anandchowdhary.com" data-title="Continuous Claude" data-summary="Run Claude Code in a loop repeatedly to do large projects">
-  <summary>Automated workflow that orchestrates Claude Code in a continuous loop, autonomously creating PRs, waiting for checks, and merging - so multi-step projects complete while you sleep. View the source code on [GitHub](https://github.com/AnandChowdhary/continuous-claude).</summary>
+  <summary>Automated workflow that orchestrates Claude Code in a continuous loop, autonomously creating PRs, waiting for checks, and merging - so multi-step projects complete while you sleep.</summary>
 
 This all started because I was contractually obligated to write unit tests for a codebase with hundreds of thousands of lines of code and go from 0% to 80%+ coverage in the next few weeks - seems like something Claude should do. So I built Continuous Claude, a CLI tool to run Claude Code in a loop that maintains a persistent context across multiple iterations.
 
