@@ -12,7 +12,7 @@ This script automates the entire PR lifecycle—from code changes to merged comm
 - It waits for all required PR checks and code reviews to complete
 - Once checks pass and reviews are approved, the PR is merged
 - This process repeats until your task is complete
-- A `SHARED_TASK_NOTES.md` file acts as a relay baton, passing context and next steps between iterations
+- A `SHARED_TASK_NOTES.md` file maintains continuity by passing context between iterations, enabling seamless handoffs across AI and human developers
 
 ## 🚀 Quick start
 
