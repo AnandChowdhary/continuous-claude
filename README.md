@@ -16,7 +16,7 @@ This script automates the entire PR lifecycle—from code changes to merged comm
 
 ## 🚀 Quick start
 
-Prerequisites: Install and authenticate the [Claude Code CLI](https://code.claude.com) and [GitHub CLI](https://cli.github.com). Then:
+**Prerequisites:** Install the [Claude Code CLI](https://code.claude.com) and [GitHub CLI](https://cli.github.com), then authenticate both (`claude auth` and `gh auth login`). Once ready:
 
 ```bash
 # Download the script
