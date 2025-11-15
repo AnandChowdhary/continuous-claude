@@ -1,6 +1,6 @@
 # 🔂 Continuous Claude
 
-An automated wrapper for Claude Code that continuously executes tasks, committing changes and merging pull requests until your goal is achieved.
+An automated workflow that runs Claude Code in a continuous loop, creating and merging pull requests until your development goal is complete.
 
 ## ⚙️ How it works
 
