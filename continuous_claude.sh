@@ -368,7 +368,20 @@ continuous_claude_commit() {
         return 0
     fi
 
-    if git diff --quiet && git diff --cached --quiet; then
+    # Check for any changes: modified tracked files, staged changes, or new untracked files
+    local has_changes=false
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        has_changes=true
+    fi
+    
+    # Also check for untracked files (excluding ignored files)
+    if [ -z "$(git ls-files --others --exclude-standard)" ]; then
+        : # no untracked files
+    else
+        has_changes=true
+    fi
+    
+    if [ "$has_changes" = "false" ]; then
         echo "🫙 $iteration_display No changes detected, cleaning up branch..." >&2
         git checkout "$main_branch" >/dev/null 2>&1
         git branch -D "$branch_name" >/dev/null 2>&1 || true
@@ -383,8 +396,9 @@ continuous_claude_commit() {
         return 1
     fi
 
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-        echo "⚠️  $iteration_display Commit command ran but changes still present" >&2
+    # Verify all changes (including untracked files) were committed
+    if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        echo "⚠️  $iteration_display Commit command ran but changes still present (uncommitted or untracked files remain)" >&2
         git checkout "$main_branch" >/dev/null 2>&1
         return 1
     fi
