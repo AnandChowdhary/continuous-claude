@@ -119,13 +119,13 @@ jobs:
           Install with a single command:
 
           \`\`\`bash
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${NEW_VERSION}/install.sh | bash
           \`\`\`
 
           Or download the script directly:
 
           \`\`\`bash
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/continuous_claude.sh -o continuous-claude
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${NEW_VERSION}/continuous_claude.sh -o continuous-claude
           chmod +x continuous-claude
           sudo mv continuous-claude /usr/local/bin/
           \`\`\`
