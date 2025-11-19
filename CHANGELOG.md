@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## [v0.8.0] - 2025-11-19
+
+### What's Changed
+
+- :sparkles: Add PR branch update process (13db4cf)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.7.0...v0.8.0
+
+### Installation
+
+Install with a single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/refs/tags/v0.8.0/install.sh | bash
+```
+
+Or download the script directly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/refs/tags/v0.8.0/continuous_claude.sh -o continuous-claude
+chmod +x continuous-claude
+sudo mv continuous-claude /usr/local/bin/
+```
+
 ## [v0.7.0] - 2025-11-19
 
 ### What's Changed
