@@ -2,7 +2,7 @@
 
 VERSION="v0.8.3"
 
-ADDITIONAL_FLAGS="--dangerously-skip-permissions --output-format json"
+AGENT_COMMAND="claude -p {prompt} --dangerously-skip-permissions --output-format json"
 
 NOTES_FILE="SHARED_TASK_NOTES.md"
 
@@ -78,6 +78,12 @@ REQUIRED OPTIONS:
 OPTIONAL FLAGS:
     -h, --help                    Show this help message
     -v, --version                 Show version information
+    --agent <command>             AI agent command with {prompt} placeholder (default: "claude -p {prompt} --dangerously-skip-permissions --output-format json")
+                                  Examples:
+                                    --agent "claude -p {prompt} --json"
+                                    --agent "codex exec {prompt} --full-auto"
+                                    --agent "aider --message {prompt} --yes --model gpt-4"
+                                  The {prompt} placeholder will be replaced with the actual prompt
     --disable-commits             Disable automatic commits and PR creation
     --git-branch-prefix <prefix>  Branch prefix for iterations (default: "continuous-claude/")
     --merge-strategy <strategy>   PR merge strategy: squash, merge, or rebase (default: "squash")
@@ -92,8 +98,14 @@ OPTIONAL FLAGS:
     --completion-threshold <num>  Number of consecutive signals to stop early (default: 3)
 
 EXAMPLES:
-    # Run 5 iterations to fix bugs
+    # Run 5 iterations to fix bugs (uses Claude by default)
     continuous-claude -p "Fix all linter errors" -m 5 --owner myuser --repo myproject
+
+    # Use OpenAI Codex instead of Claude
+    continuous-claude --agent "codex exec {prompt}" -p "Add tests" -m 5 --owner myuser --repo myproject
+
+    # Use Aider with custom model
+    continuous-claude --agent "aider --message {prompt} --yes --model gpt-4" -p "Refactor code" -m 3 --owner myuser --repo myproject
 
     # Run with cost limit
     continuous-claude -p "Add tests" --max-cost 10.00 --owner myuser --repo myproject
@@ -124,8 +136,8 @@ EXAMPLES:
         --completion-threshold 3
 
 REQUIREMENTS:
-    - Claude Code CLI (https://claude.ai/code)
-    - GitHub CLI (gh) - authenticated with 'gh auth login'
+    - AI agent CLI (default: Claude Code from https://claude.ai/code, or specify with --agent)
+    - GitHub CLI (gh) - authenticated with 'gh auth login' (unless --disable-commits)
     - jq - JSON parsing utility
     - Git repository (unless --disable-commits is used)
 
@@ -212,6 +224,10 @@ parse_arguments() {
                 COMPLETION_THRESHOLD="$2"
                 shift 2
                 ;;
+            --agent)
+                AGENT_COMMAND="$2"
+                shift 2
+                ;;
             *)
                 # Collect unknown flags to forward to claude
                 EXTRA_CLAUDE_FLAGS+=("$1")
@@ -275,16 +291,22 @@ validate_arguments() {
 }
 
 validate_requirements() {
-    if ! command -v claude &> /dev/null; then
-        echo "❌ Error: Claude Code is not installed: https://claude.ai/code" >&2
+    # Extract base command from AGENT_COMMAND (first word)
+    local agent_base_cmd=$(echo "$AGENT_COMMAND" | awk '{print $1}')
+    
+    if ! command -v "$agent_base_cmd" &> /dev/null; then
+        echo "❌ Error: Agent command '$agent_base_cmd' is not installed." >&2
+        echo "   Please install the agent or specify a different one with --agent" >&2
         exit 1
     fi
 
     if ! command -v jq &> /dev/null; then
-        echo "⚠️ jq is required for JSON parsing but is not installed. Asking Claude Code to install it..." >&2
-        claude -p "$PROMPT_JQ_INSTALL" --allowedTools "Bash,Read"
+        echo "⚠️ jq is required for JSON parsing but is not installed. Asking agent to install it..." >&2
+        # Try to use the agent to install jq
+        local install_cmd="${AGENT_COMMAND//\{prompt\}/$PROMPT_JQ_INSTALL}"
+        eval "$install_cmd" &> /dev/null || true
         if ! command -v jq &> /dev/null; then
-            echo "❌ Error: jq is still not installed after Claude Code attempt." >&2
+            echo "❌ Error: jq is still not installed. Please install it manually." >&2
             exit 1
         fi
     fi
@@ -639,7 +661,11 @@ continuous_claude_commit() {
     
     echo "💬 $iteration_display Committing changes..." >&2
     
-    if ! claude -p "$PROMPT_COMMIT_MESSAGE" --allowedTools "Bash(git)" --dangerously-skip-permissions >/dev/null 2>&1; then
+    # Use agent to create commit message, replacing {prompt} placeholder
+    local escaped_commit_prompt="${PROMPT_COMMIT_MESSAGE//\"/\\\"}"
+    local commit_cmd="${AGENT_COMMAND//\{prompt\}/\"$escaped_commit_prompt\"}"
+    
+    if ! eval "$commit_cmd" >/dev/null 2>&1; then
         echo "⚠️  $iteration_display Failed to commit changes" >&2
         git checkout "$main_branch" >/dev/null 2>&1
         return 1
@@ -855,36 +881,48 @@ get_iteration_display() {
     fi
 }
 
-run_claude_iteration() {
+run_agent_iteration() {
     local prompt="$1"
-    local flags="$2"
-    local error_log="$3"
+    local error_log="$2"
 
     if [ "$DRY_RUN" = "true" ]; then
-        echo "🤖 (DRY RUN) Would run Claude Code with prompt: $prompt" >&2
-        echo "📝 (DRY RUN) Output: This is a simulated response from Claude Code." > "$error_log"
+        local agent_name=$(echo "$AGENT_COMMAND" | awk '{print $1}')
+        echo "🤖 (DRY RUN) Would run $agent_name with prompt: $prompt" >&2
+        echo "📝 (DRY RUN) Output: This is a simulated response from $agent_name." > "$error_log"
         return 0
     fi
 
-    claude -p "$prompt" $flags "${EXTRA_CLAUDE_FLAGS[@]}" 2> >(tee "$error_log" >&2)
+    # Replace {prompt} placeholder with actual prompt (escape for shell safety)
+    local escaped_prompt="${prompt//\"/\\\"}"
+    local agent_cmd="${AGENT_COMMAND//\{prompt\}/\"$escaped_prompt\"}"
+    
+    # Execute the agent command
+    eval "$agent_cmd ${EXTRA_CLAUDE_FLAGS[@]}" 2> >(tee "$error_log" >&2)
 }
 
-parse_claude_result() {
+parse_agent_result() {
     local result="$1"
+    local exit_code="$2"
     
-    if ! echo "$result" | jq -e . >/dev/null 2>&1; then
-        echo "invalid_json"
-        return 1
+    # Try to parse as JSON first
+    if echo "$result" | jq -e . >/dev/null 2>&1; then
+        # It's valid JSON - check for is_error field
+        local is_error=$(echo "$result" | jq -r '.is_error // false')
+        if [ "$is_error" = "true" ]; then
+            echo "agent_error"
+            return 1
+        fi
     fi
     
-    local is_error=$(echo "$result" | jq -r '.is_error // false')
-    if [ "$is_error" = "true" ]; then
-        echo "claude_error"
+    # For non-JSON or JSON without is_error, rely on exit code
+    # Exit code 0 = success regardless of output format
+    if [ "$exit_code" = "0" ]; then
+        echo "success"
+        return 0
+    else
+        echo "exit_code_error"
         return 1
     fi
-    
-    echo "success"
-    return 0
 }
 
 handle_iteration_error() {
@@ -896,17 +934,18 @@ handle_iteration_error() {
     extra_iterations=$((extra_iterations + 1))
     
     case "$error_type" in
-        "exit_code")
+        "exit_code_error")
             echo "❌ $iteration_display Error occurred ($error_count consecutive errors):" >&2
             cat "$ERROR_LOG" >&2
             ;;
-        "invalid_json")
-            echo "❌ $iteration_display Error: Invalid JSON response ($error_count consecutive errors):" >&2
-            echo "$error_output" >&2
-            ;;
-        "claude_error")
-            echo "❌ $iteration_display Error in Claude Code response ($error_count consecutive errors):" >&2
-            echo "$error_output" | jq -r '.result // .' >&2
+        "agent_error")
+            echo "❌ $iteration_display Error in agent response ($error_count consecutive errors):" >&2
+            # Try to extract result field from JSON, or show raw output
+            if echo "$error_output" | jq -e . >/dev/null 2>&1; then
+                echo "$error_output" | jq -r '.result // .' >&2
+            else
+                echo "$error_output" >&2
+            fi
             ;;
     esac
     
@@ -925,7 +964,19 @@ handle_iteration_success() {
     local main_branch="$4"
     
     echo "📝 $iteration_display Output:" >&2
-    local result_text=$(echo "$result" | jq -r '.result // empty')
+    
+    # Try to extract result from JSON, fall back to using entire output
+    local result_text=""
+    if echo "$result" | jq -e . >/dev/null 2>&1; then
+        # Valid JSON - try to extract .result field
+        result_text=$(echo "$result" | jq -r '.result // empty')
+    fi
+    
+    # If JSON didn't have .result field, or wasn't JSON, use entire output
+    if [ -z "$result_text" ]; then
+        result_text="$result"
+    fi
+    
     if [ -n "$result_text" ]; then
         echo "$result_text"
     else
@@ -945,11 +996,14 @@ handle_iteration_success() {
         completion_signal_count=0
     fi
 
-    local cost=$(echo "$result" | jq -r '.total_cost_usd // empty')
-    if [ -n "$cost" ]; then
-        echo "" >&2
-        printf "💰 $iteration_display Cost: \$%.3f\n" "$cost" >&2
-        total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $cost}")
+    # Try to extract cost if available (optional, many agents don't provide this)
+    if echo "$result" | jq -e . >/dev/null 2>&1; then
+        local cost=$(echo "$result" | jq -r '.total_cost_usd // empty')
+        if [ -n "$cost" ]; then
+            echo "" >&2
+            printf "💰 $iteration_display Cost: \$%.3f\n" "$cost" >&2
+            total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $cost}")
+        fi
     fi
 
     echo "✅ $iteration_display Work completed" >&2
@@ -1034,20 +1088,14 @@ $notes_content
     
     enhanced_prompt+="$PROMPT_NOTES_GUIDELINES"
 
-    echo "🤖 $iteration_display Running Claude Code..." >&2
+    local agent_name=$(echo "$AGENT_COMMAND" | awk '{print $1}')
+    echo "🤖 $iteration_display Running $agent_name..." >&2
     
     local result
-    if ! result=$(run_claude_iteration "$enhanced_prompt" "$ADDITIONAL_FLAGS" "$ERROR_LOG"); then
-        # Clean up branch on error
-        if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
-            git checkout "$main_branch" >/dev/null 2>&1
-            git branch -D "$branch_name" >/dev/null 2>&1 || true
-        fi
-        handle_iteration_error "$iteration_display" "exit_code" ""
-        return 1
-    fi
+    result=$(run_agent_iteration "$enhanced_prompt" "$ERROR_LOG")
+    local agent_exit_code=$?
     
-    local parse_result=$(parse_claude_result "$result")
+    local parse_result=$(parse_agent_result "$result" "$agent_exit_code")
     if [ "$?" != "0" ]; then
         # Clean up branch on error
         if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then

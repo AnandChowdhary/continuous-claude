@@ -60,9 +60,9 @@ The model mirrors human development practices. Claude Code handles the grunt wor
 
 ## ⚙️ How it works
 
-Using Claude Code to drive iterative development, this script fully automates the PR lifecycle from code changes through to merged commits:
+Using AI coding agents (Claude Code by default, or OpenAI Codex, Aider, etc.) to drive iterative development, this script fully automates the PR lifecycle from code changes through to merged commits:
 
-- Claude Code runs in a loop based on your prompt
+- Your chosen AI agent runs in a loop based on your prompt
 - All changes are committed to a new branch
 - A new pull request is created
 - It waits for all required PR checks and code reviews to complete
@@ -114,8 +114,8 @@ sudo rm /usr/local/bin/continuous-claude
 
 Before using `continuous-claude`, you need:
 
-1. **[Claude Code CLI](https://code.claude.com)** - Authenticate with `claude auth`
-2. **[GitHub CLI](https://cli.github.com)** - Authenticate with `gh auth login`
+1. **An AI coding agent CLI** - By default uses [Claude Code](https://code.claude.com) (authenticate with `claude auth`), but you can use any agent with the `--agent` flag (e.g., [OpenAI Codex](https://developers.openai.com/codex), [Aider](https://aider.chat), etc.)
+2. **[GitHub CLI](https://cli.github.com)** - Authenticate with `gh auth login` (not needed with `--disable-commits`)
 3. **jq** - Install with `brew install jq` (macOS) or `apt-get install jq` (Linux)
 
 ### Usage
@@ -130,11 +130,13 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-cost
 
 ## 🎯 Flags
 
-- `-p, --prompt`: Task prompt for Claude Code (required)
+- `-p, --prompt`: Task prompt for the AI agent (required)
 - `-m, --max-runs`: Maximum number of iterations, use `0` for infinite (required unless --max-cost is provided)
 - `--max-cost`: Maximum USD to spend (required unless --max-runs is provided)
 - `--owner`: GitHub repository owner (required)
 - `--repo`: GitHub repository name (required)
+- `--agent <command>`: AI agent command with `{prompt}` placeholder (default: `"claude -p {prompt} --dangerously-skip-permissions --output-format json"`)
+  - Examples: `"codex exec {prompt}"`, `"aider --message {prompt} --yes"`
 - `--merge-strategy`: Merge strategy: `squash`, `merge`, or `rebase` (default: `squash`)
 - `--git-branch-prefix`: Prefix for git branch names (default: `continuous-claude/`)
 - `--notes-file`: Path to shared task notes file (default: `SHARED_TASK_NOTES.md`)
@@ -184,6 +186,12 @@ continuous-claude -p "add features" -m 3 --owner AnandChowdhary --repo continuou
 
 # Use a different model
 continuous-claude -p "refactor code" -m 5 --owner AnandChowdhary --repo continuous-claude --model claude-haiku-4-5
+
+# Use OpenAI Codex instead of Claude
+continuous-claude --agent "codex exec {prompt}" -p "add unit tests" -m 5 --owner AnandChowdhary --repo continuous-claude
+
+# Use Aider with a custom model
+continuous-claude --agent "aider --message {prompt} --yes --model gpt-4" -p "refactor code" -m 3 --owner AnandChowdhary --repo continuous-claude
 
 # Enable early stopping when agents signal project completion
 continuous-claude -p "add unit tests to all files" -m 50 --owner AnandChowdhary --repo continuous-claude --completion-threshold 3

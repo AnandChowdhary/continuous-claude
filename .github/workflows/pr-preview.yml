@@ -1,0 +1,232 @@
+name: PR Preview Release
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          chmod +x tests/setup.sh
+          ./tests/setup.sh
+
+      - name: Run tests
+        run: ./tests/libs/bats/bin/bats tests/test_continuous_claude.bats
+
+  preview-release:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Get latest stable tag
+        id: get_latest_tag
+        run: |
+          # Fetch all tags to ensure we have the latest
+          git fetch --tags --force
+
+          # Get the latest stable tag (excluding dev tags)
+          LATEST_TAG=$(git tag -l 'v*' | grep -v '\-dev\.' | sort -V | tail -n1 || echo "v0.0.0")
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "Latest stable tag: $LATEST_TAG"
+
+      - name: Determine version bump
+        id: version_bump
+        run: |
+          LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
+
+          # Remove 'v' prefix if present
+          VERSION=${LATEST_TAG#v}
+
+          # Split version into major.minor.patch
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # Get PR commits
+          COMMITS=$(git log --pretty=format:"%s" --no-merges origin/${{ github.event.pull_request.base.ref }}..${{ github.event.pull_request.head.sha }})
+
+          echo "Commits in PR:"
+          echo "$COMMITS"
+
+          # Determine bump type based on commit messages
+          # Look for conventional commit prefixes and gitmoji
+          if echo "$COMMITS" | grep -qiE "^(breaking|BREAKING CHANGE|feat!|fix!|chore!|:boom:)"; then
+            # Major version bump for breaking changes
+            # :boom: = breaking changes
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            BUMP_TYPE="major"
+          elif echo "$COMMITS" | grep -qiE "^(feat|:sparkles:)"; then
+            # Minor version bump for new features
+            # :sparkles: = new feature
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            BUMP_TYPE="minor"
+          else
+            # Patch version bump for everything else
+            # :bug: = bug fix, :ambulance: = critical hotfix, etc.
+            PATCH=$((PATCH + 1))
+            BUMP_TYPE="patch"
+          fi
+
+          # Create dev version with PR number
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          DEV_VERSION="v${MAJOR}.${MINOR}.${PATCH}-dev.pr${PR_NUMBER}"
+
+          echo "dev_version=$DEV_VERSION" >> $GITHUB_OUTPUT
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "Dev version: $DEV_VERSION (${BUMP_TYPE} bump)"
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
+          DEV_VERSION="${{ steps.version_bump.outputs.dev_version }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+
+          # Get PR commits with details
+          COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges origin/${{ github.event.pull_request.base.ref }}..${{ github.event.pull_request.head.sha }})
+
+          # Create release notes
+          cat > release_notes.md << 'EOF'
+          ## Pre-release for Testing
+
+          > **Warning**: This is a pre-release version created automatically from PR #${{ github.event.pull_request.number }}.
+          > It is intended for testing purposes only and should not be used in production.
+
+          ### Pull Request Details
+
+          - **PR**: [#${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}](${{ github.event.pull_request.html_url }})
+          - **Author**: @${{ github.event.pull_request.user.login }}
+          - **Base Version**: ${{ steps.get_latest_tag.outputs.latest_tag }}
+          - **Bump Type**: ${{ steps.version_bump.outputs.bump_type }}
+
+          ### Changes in this PR
+
+          EOF
+
+          echo "$COMMITS" >> release_notes.md
+
+          cat >> release_notes.md << 'EOF'
+
+          ### Installation
+
+          Test this pre-release with:
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${{ steps.version_bump.outputs.dev_version }}/install.sh | bash
+          ```
+
+          Or download the script directly:
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${{ steps.version_bump.outputs.dev_version }}/continuous_claude.sh -o continuous-claude
+          chmod +x continuous-claude
+          sudo mv continuous-claude /usr/local/bin/
+          ```
+
+          ### Feedback
+
+          Please test this pre-release and report any issues in the PR comments.
+          EOF
+
+          echo "Release notes generated"
+          cat release_notes.md
+
+      - name: Delete old preview releases for this PR
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          # Get all releases with tags matching this PR
+          OLD_RELEASES=$(gh release list --limit 100 | grep "dev.pr${PR_NUMBER}" | awk '{print $3}' || true)
+
+          if [ -n "$OLD_RELEASES" ]; then
+            echo "Deleting old preview releases for PR #${PR_NUMBER}..."
+            for tag in $OLD_RELEASES; do
+              echo "Deleting release: $tag"
+              gh release delete "$tag" --yes || true
+              git push --delete origin "$tag" || true
+            done
+          else
+            echo "No old preview releases found for PR #${PR_NUMBER}"
+          fi
+
+      - name: Create Pre-release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.version_bump.outputs.dev_version }}
+          name: "Pre-release for PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
+          bodyFile: release_notes.md
+          draft: false
+          prerelease: true
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const devVersion = '${{ steps.version_bump.outputs.dev_version }}';
+            const bumpType = '${{ steps.version_bump.outputs.bump_type }}';
+
+            const comment = `## 🚀 Preview Release Created
+
+            A pre-release has been created for testing this PR.
+
+            - **Version**: \`${devVersion}\`
+            - **Bump Type**: ${bumpType}
+            - **Release**: [View Release](https://github.com/${{ github.repository }}/releases/tag/${devVersion})
+
+            ### Test this PR
+
+            Install and test this version with:
+
+            \`\`\`bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${devVersion}/install.sh | bash
+            \`\`\`
+
+            Or download directly:
+
+            \`\`\`bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${devVersion}/continuous_claude.sh -o continuous-claude
+            chmod +x continuous-claude
+            sudo mv continuous-claude /usr/local/bin/
+            \`\`\`
+
+            Please test and provide feedback! 🧪`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Preview Release Summary
+        run: |
+          echo "🎉 Created preview release ${{ steps.version_bump.outputs.dev_version }}"
+          echo "📦 Bump type: ${{ steps.version_bump.outputs.bump_type }}"
+          echo "🔗 PR: #${{ github.event.pull_request.number }}"

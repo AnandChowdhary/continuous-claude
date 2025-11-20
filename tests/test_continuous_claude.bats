@@ -108,8 +108,8 @@ setup() {
     # But success means it didn't crash
 }
 
-@test "validate_requirements fails when claude is missing" {
-    # Mock command to fail for claude
+@test "validate_requirements fails when agent is missing" {
+    # Mock command to fail for claude (default agent)
     function command() {
         if [ "$2" == "claude" ]; then
             return 1
@@ -122,7 +122,7 @@ setup() {
     run validate_requirements
     
     assert_failure
-    assert_output --partial "Error: Claude Code is not installed"
+    assert_output --partial "Agent command 'claude' is not installed"
 }
 
 @test "validate_requirements fails when jq is missing" {
@@ -196,25 +196,26 @@ setup() {
     assert_output "(1)"
 }
 
-@test "parse_claude_result handles valid success JSON" {
+@test "parse_agent_result handles valid success JSON (backward compat)" {
     source "$SCRIPT_PATH"
-    run parse_claude_result '{"result": "success", "total_cost_usd": 0.1}'
+    run parse_agent_result '{"result": "success", "total_cost_usd": 0.1}' 0
     assert_success
     assert_output "success"
 }
 
-@test "parse_claude_result handles invalid JSON" {
+@test "parse_agent_result handles plain text as success with exit 0 (backward compat)" {
     source "$SCRIPT_PATH"
-    run parse_claude_result 'invalid json'
-    assert_failure
-    assert_output "invalid_json"
+    # Non-JSON should be treated as success if exit code is 0
+    run parse_agent_result 'plain text output' 0
+    assert_success
+    assert_output "success"
 }
 
-@test "parse_claude_result handles Claude error JSON" {
+@test "parse_agent_result handles agent error JSON (backward compat)" {
     source "$SCRIPT_PATH"
-    run parse_claude_result '{"is_error": true, "result": "error message"}'
+    run parse_agent_result '{"is_error": true, "result": "error message"}' 0
     assert_failure
-    assert_output "claude_error"
+    assert_output "agent_error"
 }
 
 @test "create_iteration_branch generates correct branch name" {
@@ -389,6 +390,180 @@ setup() {
     
     assert_success
     assert_output --partial "Completion signal detected (1/3)"
+}
+
+@test "parse_arguments handles agent flag" {
+    source "$SCRIPT_PATH"
+    parse_arguments --agent "codex exec {prompt}"
+    
+    assert_equal "$AGENT_COMMAND" "codex exec {prompt}"
+}
+
+@test "default agent is claude with flags" {
+    source "$SCRIPT_PATH"
+    
+    assert_equal "$AGENT_COMMAND" "claude -p {prompt} --dangerously-skip-permissions --output-format json"
+}
+
+@test "parse_arguments handles agent with multiple flags" {
+    source "$SCRIPT_PATH"
+    parse_arguments --agent "aider --message {prompt} --yes --model gpt-4"
+    
+    assert_equal "$AGENT_COMMAND" "aider --message {prompt} --yes --model gpt-4"
+}
+
+@test "validate_requirements extracts base command from agent" {
+    source "$SCRIPT_PATH"
+    AGENT_COMMAND="myagent -p {prompt} --flag1 --flag2"
+    ENABLE_COMMITS="false"
+    
+    # Mock command to fail for myagent
+    function command() {
+        if [ "$2" == "myagent" ]; then
+            return 1
+        fi
+        return 0
+    }
+    export -f command
+    
+    run validate_requirements
+    
+    assert_failure
+    assert_output --partial "Agent command 'myagent' is not installed"
+}
+
+@test "validate_requirements succeeds with valid agent" {
+    source "$SCRIPT_PATH"
+    AGENT_COMMAND="echo -p {prompt}"
+    ENABLE_COMMITS="false"
+    
+    function command() {
+        return 0
+    }
+    export -f command
+    
+    run validate_requirements
+    
+    assert_success
+}
+
+@test "parse_agent_result handles valid JSON with success" {
+    source "$SCRIPT_PATH"
+    run parse_agent_result '{"result": "success", "total_cost_usd": 0.1}' 0
+    assert_success
+    assert_output "success"
+}
+
+@test "parse_agent_result handles JSON with is_error true" {
+    source "$SCRIPT_PATH"
+    run parse_agent_result '{"is_error": true, "result": "error message"}' 0
+    assert_failure
+    assert_output "agent_error"
+}
+
+@test "parse_agent_result handles non-JSON with exit code 0" {
+    source "$SCRIPT_PATH"
+    run parse_agent_result 'This is plain text output' 0
+    assert_success
+    assert_output "success"
+}
+
+@test "parse_agent_result handles non-JSON with non-zero exit code" {
+    source "$SCRIPT_PATH"
+    run parse_agent_result 'Error output' 1
+    assert_failure
+    assert_output "exit_code_error"
+}
+
+@test "parse_agent_result handles JSON without is_error field" {
+    source "$SCRIPT_PATH"
+    run parse_agent_result '{"output": "some result"}' 0
+    assert_success
+    assert_output "success"
+}
+
+@test "handle_iteration_success extracts text from JSON" {
+    source "$SCRIPT_PATH"
+    
+    completion_signal_count=0
+    total_cost=0
+    COMPLETION_SIGNAL="TEST"
+    COMPLETION_THRESHOLD=3
+    ENABLE_COMMITS="false"
+    
+    result='{"result": "Task completed", "total_cost_usd": 0.5}'
+    
+    function git() { return 0; }
+    export -f git
+    
+    run handle_iteration_success "(1/3)" "$result" "" "main"
+    
+    assert_success
+    assert_output --partial "Task completed"
+    assert_output --partial "Cost: \$0.500"
+}
+
+@test "handle_iteration_success handles plain text output" {
+    source "$SCRIPT_PATH"
+    
+    completion_signal_count=0
+    total_cost=0
+    COMPLETION_SIGNAL="TEST"
+    COMPLETION_THRESHOLD=3
+    ENABLE_COMMITS="false"
+    
+    result='Plain text output from agent'
+    
+    function git() { return 0; }
+    export -f git
+    
+    run handle_iteration_success "(1/3)" "$result" "" "main"
+    
+    assert_success
+    assert_output --partial "Plain text output from agent"
+    refute_output --partial "Cost:"
+}
+
+@test "handle_iteration_success handles JSON without cost" {
+    source "$SCRIPT_PATH"
+    
+    completion_signal_count=0
+    total_cost=0
+    COMPLETION_SIGNAL="TEST"
+    COMPLETION_THRESHOLD=3
+    ENABLE_COMMITS="false"
+    
+    result='{"result": "Done"}'
+    
+    function git() { return 0; }
+    export -f git
+    
+    run handle_iteration_success "(1/3)" "$result" "" "main"
+    
+    assert_success
+    assert_output --partial "Done"
+    refute_output --partial "Cost:"
+}
+
+@test "handle_iteration_success handles JSON with different schema" {
+    source "$SCRIPT_PATH"
+    
+    completion_signal_count=0
+    total_cost=0
+    COMPLETION_SIGNAL="TEST"
+    COMPLETION_THRESHOLD=3
+    ENABLE_COMMITS="false"
+    
+    # JSON without .result field, should use entire output
+    result='{"output": "some text", "status": "ok"}'
+    
+    function git() { return 0; }
+    export -f git
+    
+    run handle_iteration_success "(1/3)" "$result" "" "main"
+    
+    assert_success
+    assert_output --partial '{"output": "some text", "status": "ok"}'
 }
 
 @test "show_completion_summary shows signal message" {
