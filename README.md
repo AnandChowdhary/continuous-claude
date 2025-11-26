@@ -129,13 +129,17 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-runs
 
 # Or run with a cost budget instead
 continuous-claude --prompt "add unit tests until all code is covered" --max-cost 10.00
+
+# Or run for a specific duration (time-boxed bursts)
+continuous-claude --prompt "add unit tests until all code is covered" --max-duration 2h
 ```
 
 ## 🎯 Flags
 
 - `-p, --prompt`: Task prompt for Claude Code (required)
-- `-m, --max-runs`: Maximum number of iterations, use `0` for infinite (required unless --max-cost is provided)
-- `--max-cost`: Maximum USD to spend (required unless --max-runs is provided)
+- `-m, --max-runs`: Maximum number of iterations, use `0` for infinite (required unless --max-cost or --max-duration is provided)
+- `--max-cost`: Maximum USD to spend (required unless --max-runs or --max-duration is provided)
+- `--max-duration`: Maximum duration to run (e.g., `2h`, `30m`, `1h30m`) (required unless --max-runs or --max-cost is provided)
 - `--owner`: GitHub repository owner (auto-detected from git remote if not provided)
 - `--repo`: GitHub repository name (auto-detected from git remote if not provided)
 - `--merge-strategy`: Merge strategy: `squash`, `merge`, or `rebase` (default: `squash`)
@@ -164,8 +168,20 @@ continuous-claude -p "add unit tests until all code is covered" -m 0
 # Run until $10 budget exhausted
 continuous-claude -p "add documentation" --max-cost 10.00
 
+# Run for 2 hours (time-boxed burst)
+continuous-claude -p "add unit tests" --max-duration 2h
+
+# Run for 30 minutes
+continuous-claude -p "refactor module" --max-duration 30m
+
+# Run for 1 hour and 30 minutes
+continuous-claude -p "add features" --max-duration 1h30m
+
 # Run max 10 iterations or $5, whichever comes first
 continuous-claude -p "refactor code" -m 10 --max-cost 5.00
+
+# Combine duration and cost limits (whichever comes first)
+continuous-claude -p "improve tests" --max-duration 1h --max-cost 5.00
 
 # Use merge commits instead of squash
 continuous-claude -p "add features" -m 5 --merge-strategy merge

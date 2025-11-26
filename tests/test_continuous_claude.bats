@@ -79,9 +79,10 @@ setup() {
     PROMPT="test"
     MAX_RUNS=""
     MAX_COST=""
+    MAX_DURATION=""
     run validate_arguments
     assert_failure
-    assert_output --partial "Error: Either --max-runs or --max-cost is required"
+    assert_output --partial "Error: Either --max-runs, --max-cost, or --max-duration is required"
 }
 
 @test "validate_arguments passes with valid arguments" {
@@ -1164,4 +1165,207 @@ setup() {
     
     assert_failure
     assert_output --partial "GitHub owner is required"
+}
+
+@test "parse_duration parses hours correctly" {
+    source "$SCRIPT_PATH"
+    
+    run parse_duration "2h"
+    assert_success
+    assert_output "7200"
+    
+    run parse_duration "1h"
+    assert_success
+    assert_output "3600"
+}
+
+@test "parse_duration parses minutes correctly" {
+    source "$SCRIPT_PATH"
+    
+    run parse_duration "30m"
+    assert_success
+    assert_output "1800"
+    
+    run parse_duration "90m"
+    assert_success
+    assert_output "5400"
+}
+
+@test "parse_duration parses seconds correctly" {
+    source "$SCRIPT_PATH"
+    
+    run parse_duration "45s"
+    assert_success
+    assert_output "45"
+    
+    run parse_duration "120s"
+    assert_success
+    assert_output "120"
+}
+
+@test "parse_duration parses combined durations" {
+    source "$SCRIPT_PATH"
+    
+    run parse_duration "1h30m"
+    assert_success
+    assert_output "5400"
+    
+    run parse_duration "2h15m30s"
+    assert_success
+    assert_output "8130"
+    
+    run parse_duration "45m30s"
+    assert_success
+    assert_output "2730"
+}
+
+@test "parse_duration handles whitespace" {
+    source "$SCRIPT_PATH"
+    
+    run parse_duration "1h 30m"
+    assert_success
+    assert_output "5400"
+    
+    run parse_duration " 2h "
+    assert_success
+    assert_output "7200"
+}
+
+@test "parse_duration fails with invalid format" {
+    source "$SCRIPT_PATH"
+    
+    run parse_duration "2x"
+    assert_failure
+    
+    run parse_duration "abc"
+    assert_failure
+    
+    run parse_duration ""
+    assert_failure
+    
+    run parse_duration "0h"
+    assert_failure
+}
+
+@test "parse_duration case insensitive" {
+    source "$SCRIPT_PATH"
+    
+    run parse_duration "2H"
+    assert_success
+    assert_output "7200"
+    
+    run parse_duration "30M"
+    assert_success
+    assert_output "1800"
+    
+    run parse_duration "45S"
+    assert_success
+    assert_output "45"
+}
+
+@test "format_duration formats correctly" {
+    source "$SCRIPT_PATH"
+    
+    run format_duration 7200
+    assert_success
+    assert_output "2h"
+    
+    run format_duration 1800
+    assert_success
+    assert_output "30m"
+    
+    run format_duration 45
+    assert_success
+    assert_output "45s"
+    
+    run format_duration 5400
+    assert_success
+    assert_output "1h30m"
+    
+    run format_duration 8130
+    assert_success
+    assert_output "2h15m30s"
+}
+
+@test "format_duration handles zero" {
+    source "$SCRIPT_PATH"
+    
+    run format_duration 0
+    assert_success
+    assert_output "0s"
+}
+
+@test "parse_arguments handles max-duration flag" {
+    source "$SCRIPT_PATH"
+    parse_arguments --max-duration "2h"
+    
+    assert_equal "$MAX_DURATION" "2h"
+}
+
+@test "validate_arguments accepts max-duration" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS=""
+    MAX_COST=""
+    MAX_DURATION="2h"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    
+    # Call validate_arguments directly (not with run) so variable changes persist
+    validate_arguments
+    
+    # After validation, MAX_DURATION should be converted to seconds
+    assert_equal "$MAX_DURATION" "7200"
+}
+
+@test "validate_arguments fails without max-runs, max-cost, or max-duration" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS=""
+    MAX_COST=""
+    MAX_DURATION=""
+    
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: Either --max-runs, --max-cost, or --max-duration is required"
+}
+
+@test "validate_arguments fails with invalid max-duration format" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS=""
+    MAX_COST=""
+    MAX_DURATION="invalid"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --max-duration must be a valid duration"
+}
+
+@test "validate_arguments accepts max-duration with max-runs" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    MAX_COST=""
+    MAX_DURATION="1h"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    
+    run validate_arguments
+    assert_success
+}
+
+@test "validate_arguments accepts max-duration with max-cost" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS=""
+    MAX_COST="10.00"
+    MAX_DURATION="30m"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    
+    run validate_arguments
+    assert_success
 }

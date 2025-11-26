@@ -42,6 +42,7 @@ The file should NOT include:
 PROMPT=""
 MAX_RUNS=""
 MAX_COST=""
+MAX_DURATION=""
 ENABLE_COMMITS=true
 GIT_BRANCH_PREFIX="continuous-claude/"
 MERGE_STRATEGY="squash"
@@ -62,19 +63,98 @@ total_cost=0
 completion_signal_count=0
 i=1
 EXTRA_CLAUDE_FLAGS=()
+start_time=""
+
+parse_duration() {
+    # Parse a duration string like "2h", "30m", "1h30m", "90s" to seconds
+    # Returns: number of seconds, or empty string on error
+    local duration_str="$1"
+    
+    # Remove all whitespace
+    duration_str=$(echo "$duration_str" | tr -d '[:space:]')
+    
+    if [ -z "$duration_str" ]; then
+        return 1
+    fi
+    
+    local total_seconds=0
+    local remaining="$duration_str"
+    
+    # Parse hours (e.g., "2h" or "2H")
+    if [[ "$remaining" =~ ([0-9]+)[hH] ]]; then
+        local hours="${BASH_REMATCH[1]}"
+        total_seconds=$((total_seconds + hours * 3600))
+        remaining="${remaining/${BASH_REMATCH[0]}/}"
+    fi
+    
+    # Parse minutes (e.g., "30m" or "30M")
+    if [[ "$remaining" =~ ([0-9]+)[mM] ]]; then
+        local minutes="${BASH_REMATCH[1]}"
+        total_seconds=$((total_seconds + minutes * 60))
+        remaining="${remaining/${BASH_REMATCH[0]}/}"
+    fi
+    
+    # Parse seconds (e.g., "45s" or "45S")
+    if [[ "$remaining" =~ ([0-9]+)[sS] ]]; then
+        local seconds="${BASH_REMATCH[1]}"
+        total_seconds=$((total_seconds + seconds))
+        remaining="${remaining/${BASH_REMATCH[0]}/}"
+    fi
+    
+    # Check if anything unparsed remains (invalid format)
+    if [ -n "$remaining" ]; then
+        return 1
+    fi
+    
+    # Must have parsed at least something
+    if [ $total_seconds -eq 0 ]; then
+        return 1
+    fi
+    
+    echo "$total_seconds"
+    return 0
+}
+
+format_duration() {
+    # Format seconds into a human-readable duration string
+    local seconds="$1"
+    
+    if [ -z "$seconds" ] || [ "$seconds" -eq 0 ]; then
+        echo "0s"
+        return
+    fi
+    
+    local hours=$((seconds / 3600))
+    local minutes=$(((seconds % 3600) / 60))
+    local secs=$((seconds % 60))
+    
+    local result=""
+    if [ $hours -gt 0 ]; then
+        result="${hours}h"
+    fi
+    if [ $minutes -gt 0 ]; then
+        result="${result}${minutes}m"
+    fi
+    if [ $secs -gt 0 ] || [ -z "$result" ]; then
+        result="${result}${secs}s"
+    fi
+    
+    echo "$result"
+}
 
 show_help() {
     cat << EOF
 Continuous Claude - Run Claude Code iteratively with automatic PR management
 
 USAGE:
-    continuous-claude -p "prompt" (-m max-runs | --max-cost max-cost) [--owner owner] [--repo repo] [options]
+    continuous-claude -p "prompt" (-m max-runs | --max-cost max-cost | --max-duration duration) [--owner owner] [--repo repo] [options]
     continuous-claude update
 
 REQUIRED OPTIONS:
     -p, --prompt <text>           The prompt/goal for Claude Code to work on
-    -m, --max-runs <number>       Maximum number of successful iterations (use 0 for unlimited with --max-cost)
+    -m, --max-runs <number>       Maximum number of successful iterations (use 0 for unlimited with --max-cost or --max-duration)
     --max-cost <dollars>          Maximum cost in USD to spend (alternative to --max-runs)
+    --max-duration <duration>     Maximum duration to run (e.g., "2h", "30m", "1h30m") (alternative to --max-runs)
 
 OPTIONAL FLAGS:
     -h, --help                    Show this help message
@@ -106,12 +186,21 @@ EXAMPLES:
     # Run with cost limit
     continuous-claude -p "Add tests" --max-cost 10.00 --owner myuser --repo myproject
 
+    # Run for a maximum duration (time-boxed)
+    continuous-claude -p "Add documentation" --max-duration 2h --owner myuser --repo myproject
+    
+    # Run for 30 minutes
+    continuous-claude -p "Refactor module" --max-duration 30m --owner myuser --repo myproject
+
     # Run without commits (testing mode)
     continuous-claude -p "Refactor code" -m 3 --disable-commits
 
     # Use custom branch prefix and merge strategy
     continuous-claude -p "Feature work" -m 10 --owner myuser --repo myproject \\
         --git-branch-prefix "ai/" --merge-strategy merge
+
+    # Combine duration and cost limits (whichever comes first)
+    continuous-claude -p "Add tests" --max-duration 1h30m --max-cost 5.00 --owner myuser --repo myproject
 
     # Run in a worktree for parallel execution
     continuous-claude -p "Add unit tests" -m 5 --owner myuser --repo myproject --worktree instance-1
@@ -471,6 +560,10 @@ parse_arguments() {
                 MAX_COST="$2"
                 shift 2
                 ;;
+            --max-duration)
+                MAX_DURATION="$2"
+                shift 2
+                ;;
             --git-branch-prefix)
                 GIT_BRANCH_PREFIX="$2"
                 shift 2
@@ -570,8 +663,8 @@ validate_arguments() {
         exit 1
     fi
 
-    if [ -z "$MAX_RUNS" ] && [ -z "$MAX_COST" ]; then
-        echo "❌ Error: Either --max-runs or --max-cost is required." >&2
+    if [ -z "$MAX_RUNS" ] && [ -z "$MAX_COST" ] && [ -z "$MAX_DURATION" ]; then
+        echo "❌ Error: Either --max-runs, --max-cost, or --max-duration is required." >&2
         echo "Run '$0 --help' for usage information." >&2
         exit 1
     fi
@@ -586,6 +679,16 @@ validate_arguments() {
             echo "❌ Error: --max-cost must be a positive number" >&2
             exit 1
         fi
+    fi
+
+    if [ -n "$MAX_DURATION" ]; then
+        local duration_seconds
+        if ! duration_seconds=$(parse_duration "$MAX_DURATION"); then
+            echo "❌ Error: --max-duration must be a valid duration (e.g., '2h', '30m', '1h30m', '90s')" >&2
+            exit 1
+        fi
+        # Store parsed duration in seconds back to MAX_DURATION for later use
+        MAX_DURATION="$duration_seconds"
     fi
 
     if [[ ! "$MERGE_STRATEGY" =~ ^(squash|merge|rebase)$ ]]; then
@@ -1499,6 +1602,11 @@ $notes_content
 }
 
 main_loop() {
+    # Initialize start time if MAX_DURATION is set
+    if [ -n "$MAX_DURATION" ]; then
+        start_time=$(date +%s)
+    fi
+    
     while true; do
         # Check if we should continue based on limits
         local should_continue=false
@@ -1511,6 +1619,17 @@ main_loop() {
         # Stop if MAX_COST is set and reached/exceeded
         if [ -n "$MAX_COST" ] && [ "$(awk "BEGIN {print ($total_cost >= $MAX_COST)}")" = "1" ]; then
             should_continue=false
+        fi
+        
+        # Stop if MAX_DURATION is set and reached/exceeded
+        if [ -n "$MAX_DURATION" ] && [ -n "$start_time" ]; then
+            local current_time=$(date +%s)
+            local elapsed_time=$((current_time - start_time))
+            if [ $elapsed_time -ge $MAX_DURATION ]; then
+                echo "" >&2
+                echo "⏱️  Maximum duration reached ($(format_duration $elapsed_time))" >&2
+                should_continue=false
+            fi
         fi
         
         # If both limits are set and both are reached, stop
@@ -1537,18 +1656,26 @@ main_loop() {
 }
 
 show_completion_summary() {
+    # Calculate elapsed time if start_time was set
+    local elapsed_msg=""
+    if [ -n "$start_time" ]; then
+        local current_time=$(date +%s)
+        local elapsed_time=$((current_time - start_time))
+        elapsed_msg=" (elapsed: $(format_duration $elapsed_time))"
+    fi
+    
     # Show completion signal message if that's why we stopped
     if [ $completion_signal_count -ge $COMPLETION_THRESHOLD ]; then
         if [ -n "$total_cost" ] && [ "$(awk "BEGIN {print ($total_cost > 0)}")" = "1" ]; then
-            printf "✨ Project completed! Detected completion signal %d times in a row. Total cost: \$%.3f\n" "$completion_signal_count" "$total_cost"
+            printf "✨ Project completed! Detected completion signal %d times in a row. Total cost: \$%.3f%s\n" "$completion_signal_count" "$total_cost" "$elapsed_msg"
         else
-            printf "✨ Project completed! Detected completion signal %d times in a row.\n" "$completion_signal_count"
+            printf "✨ Project completed! Detected completion signal %d times in a row.%s\n" "$completion_signal_count" "$elapsed_msg"
         fi
-    elif [ -n "$MAX_RUNS" ] && [ $MAX_RUNS -ne 0 ] || [ -n "$MAX_COST" ]; then
+    elif [ -n "$MAX_RUNS" ] && [ $MAX_RUNS -ne 0 ] || [ -n "$MAX_COST" ] || [ -n "$MAX_DURATION" ]; then
         if [ -n "$total_cost" ] && [ "$(awk "BEGIN {print ($total_cost > 0)}")" = "1" ]; then
-            printf "🎉 Done with total cost: \$%.3f\n" "$total_cost"
+            printf "🎉 Done with total cost: \$%.3f%s\n" "$total_cost" "$elapsed_msg"
         else 
-            echo "🎉 Done"
+            printf "🎉 Done%s\n" "$elapsed_msg"
         fi
     fi
 }
