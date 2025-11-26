@@ -663,7 +663,7 @@ setup() {
     echo "echo 'old version'" >> "$temp_script"
     chmod +x "$temp_script"
     
-    # Mock curl to write a new script
+    # Mock curl to write a new script and checksum file
     function curl() {
         local output_file=""
         for ((i=1; i<=$#; i++)); do
@@ -675,13 +675,26 @@ setup() {
         done
         
         if [ -n "$output_file" ]; then
-            echo "#!/bin/bash" > "$output_file"
-            echo "echo 'new version'" >> "$output_file"
+            # Check if this is the checksum file or the script file
+            if [[ "$output_file" == *".sha256"* ]] || [[ "${@}" == *".sha256"* ]]; then
+                # Write a dummy checksum
+                echo "dummychecksum123456789  continuous_claude.sh" > "$output_file"
+            else
+                # Write the new script
+                echo "#!/bin/bash" > "$output_file"
+                echo "echo 'new version'" >> "$output_file"
+            fi
             return 0
         fi
         return 1
     }
-    export -f curl
+    
+    # Mock sha256sum to return matching checksum
+    function sha256sum() {
+        echo "dummychecksum123456789  $1"
+    }
+    
+    export -f curl sha256sum
     
     run download_and_install_update "v0.10.0" "$temp_script"
     
@@ -692,6 +705,66 @@ setup() {
     local content=$(cat "$temp_script")
     if ! echo "$content" | grep -q "new version"; then
         fail "Script was not replaced with new version"
+    fi
+    
+    rm -f "$temp_script"
+}
+
+@test "download_and_install_update preserves execute permissions" {
+    source "$SCRIPT_PATH"
+    
+    # Create a temporary script with execute permissions
+    local temp_script=$(mktemp)
+    echo "#!/bin/bash" > "$temp_script"
+    echo "echo 'old version'" >> "$temp_script"
+    chmod +x "$temp_script"
+    
+    # Verify initial permissions include execute
+    if [ ! -x "$temp_script" ]; then
+        fail "Initial script should be executable"
+    fi
+    
+    # Mock curl to write a new script (without execute permissions) and checksum
+    function curl() {
+        local output_file=""
+        for ((i=1; i<=$#; i++)); do
+            if [ "${!i}" = "-o" ]; then
+                ((i++))
+                output_file="${!i}"
+                break
+            fi
+        done
+        
+        if [ -n "$output_file" ]; then
+            # Check if this is the checksum file or the script file
+            if [[ "$output_file" == *".sha256"* ]] || [[ "${@}" == *".sha256"* ]]; then
+                # Write a dummy checksum
+                echo "dummychecksum123456789  continuous_claude.sh" > "$output_file"
+            else
+                # Write the new script without execute permissions
+                echo "#!/bin/bash" > "$output_file"
+                echo "echo 'new version'" >> "$output_file"
+                # Note: curl doesn't set execute permissions
+            fi
+            return 0
+        fi
+        return 1
+    }
+    
+    # Mock sha256sum to return matching checksum
+    function sha256sum() {
+        echo "dummychecksum123456789  $1"
+    }
+    
+    export -f curl sha256sum
+    
+    run download_and_install_update "v0.10.0" "$temp_script"
+    
+    assert_success
+    
+    # Verify the script is still executable after update
+    if [ ! -x "$temp_script" ]; then
+        fail "Script should remain executable after update"
     fi
     
     rm -f "$temp_script"
