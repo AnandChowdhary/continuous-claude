@@ -121,11 +121,14 @@ Before using `continuous-claude`, you need:
 ### Usage
 
 ```bash
-# Run with your prompt, max runs, and GitHub repo
+# Run with your prompt, max runs, and GitHub repo (owner and repo auto-detected from git remote)
+continuous-claude --prompt "add unit tests until all code is covered" --max-runs 5
+
+# Or explicitly specify the owner and repo
 continuous-claude --prompt "add unit tests until all code is covered" --max-runs 5 --owner AnandChowdhary --repo continuous-claude
 
 # Or run with a cost budget instead
-continuous-claude --prompt "add unit tests until all code is covered" --max-cost 10.00 --owner AnandChowdhary --repo continuous-claude
+continuous-claude --prompt "add unit tests until all code is covered" --max-cost 10.00
 ```
 
 ## 🎯 Flags
@@ -133,8 +136,8 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-cost
 - `-p, --prompt`: Task prompt for Claude Code (required)
 - `-m, --max-runs`: Maximum number of iterations, use `0` for infinite (required unless --max-cost is provided)
 - `--max-cost`: Maximum USD to spend (required unless --max-runs is provided)
-- `--owner`: GitHub repository owner (required)
-- `--repo`: GitHub repository name (required)
+- `--owner`: GitHub repository owner (auto-detected from git remote if not provided)
+- `--repo`: GitHub repository name (auto-detected from git remote if not provided)
 - `--merge-strategy`: Merge strategy: `squash`, `merge`, or `rebase` (default: `squash`)
 - `--git-branch-prefix`: Prefix for git branch names (default: `continuous-claude/`)
 - `--notes-file`: Path to shared task notes file (default: `SHARED_TASK_NOTES.md`)
@@ -152,44 +155,47 @@ Any additional flags you provide that are not recognized by `continuous-claude` 
 ## 📝 Examples
 
 ```bash
-# Run 5 iterations
-continuous-claude -p "improve code quality" -m 5 --owner AnandChowdhary --repo continuous-claude
+# Run 5 iterations (owner and repo auto-detected from git remote)
+continuous-claude -p "improve code quality" -m 5
 
 # Run infinitely until stopped
-continuous-claude -p "add unit tests until all code is covered" -m 0 --owner AnandChowdhary --repo continuous-claude
+continuous-claude -p "add unit tests until all code is covered" -m 0
 
 # Run until $10 budget exhausted
-continuous-claude -p "add documentation" --max-cost 10.00 --owner AnandChowdhary --repo continuous-claude
+continuous-claude -p "add documentation" --max-cost 10.00
 
 # Run max 10 iterations or $5, whichever comes first
-continuous-claude -p "refactor code" -m 10 --max-cost 5.00 --owner AnandChowdhary --repo continuous-claude
+continuous-claude -p "refactor code" -m 10 --max-cost 5.00
 
 # Use merge commits instead of squash
-continuous-claude -p "add features" -m 5 --owner AnandChowdhary --repo continuous-claude --merge-strategy merge
+continuous-claude -p "add features" -m 5 --merge-strategy merge
 
 # Use rebase strategy
-continuous-claude -p "update dependencies" -m 3 --owner AnandChowdhary --repo continuous-claude --merge-strategy rebase
+continuous-claude -p "update dependencies" -m 3 --merge-strategy rebase
 
 # Use custom branch prefix
-continuous-claude -p "refactor code" -m 3 --owner AnandChowdhary --repo continuous-claude --git-branch-prefix "feature/"
+continuous-claude -p "refactor code" -m 3 --git-branch-prefix "feature/"
 
 # Use custom notes file
-continuous-claude -p "add features" -m 5 --owner AnandChowdhary --repo continuous-claude --notes-file "PROJECT_CONTEXT.md"
+continuous-claude -p "add features" -m 5 --notes-file "PROJECT_CONTEXT.md"
 
 # Test without creating commits or PRs
-continuous-claude -p "test changes" -m 2 --owner AnandChowdhary --repo continuous-claude --disable-commits
+continuous-claude -p "test changes" -m 2 --disable-commits
 
 # Pass additional Claude Code CLI flags (e.g., restrict tools)
-continuous-claude -p "add features" -m 3 --owner AnandChowdhary --repo continuous-claude --allowedTools "Write,Read"
+continuous-claude -p "add features" -m 3 --allowedTools "Write,Read"
 
 # Use a different model
-continuous-claude -p "refactor code" -m 5 --owner AnandChowdhary --repo continuous-claude --model claude-haiku-4-5
+continuous-claude -p "refactor code" -m 5 --model claude-haiku-4-5
 
 # Enable early stopping when agents signal project completion
-continuous-claude -p "add unit tests to all files" -m 50 --owner AnandChowdhary --repo continuous-claude --completion-threshold 3
+continuous-claude -p "add unit tests to all files" -m 50 --completion-threshold 3
 
 # Use custom completion signal
-continuous-claude -p "fix all bugs" -m 20 --owner AnandChowdhary --repo continuous-claude --completion-signal "ALL_BUGS_FIXED" --completion-threshold 2
+continuous-claude -p "fix all bugs" -m 20 --completion-signal "ALL_BUGS_FIXED" --completion-threshold 2
+
+# Explicitly specify owner and repo (useful if git remote is not set up or not a GitHub repo)
+continuous-claude -p "add features" -m 5 --owner myuser --repo myproject
 
 # Check for and install updates
 continuous-claude update
@@ -200,11 +206,11 @@ continuous-claude update
 Use git worktrees to run multiple instances simultaneously without conflicts:
 
 ```bash
-# Terminal 1
-continuous-claude -p "Add unit tests" -m 5 --owner myuser --repo myproject --worktree tests
+# Terminal 1 (owner and repo auto-detected)
+continuous-claude -p "Add unit tests" -m 5 --worktree tests
 
 # Terminal 2 (simultaneously)
-continuous-claude -p "Add docs" -m 5 --owner myuser --repo myproject --worktree docs
+continuous-claude -p "Add docs" -m 5 --worktree docs
 ```
 
 Each instance creates its own worktree at `../continuous-claude-worktrees/<name>/`, pulls the latest changes, and runs independently. Worktrees persist for reuse.
@@ -214,7 +220,7 @@ Each instance creates its own worktree at `../continuous-claude-worktrees/<name>
 continuous-claude --list-worktrees
 
 # Clean up after completion
-continuous-claude -p "task" -m 1 --owner user --repo project --worktree temp --cleanup-worktree
+continuous-claude -p "task" -m 1 --worktree temp --cleanup-worktree
 ```
 
 ## 📊 Example output
