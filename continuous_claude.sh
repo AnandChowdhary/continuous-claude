@@ -237,11 +237,32 @@ download_and_install_update() {
     local temp_file=$(mktemp)
     # Use the specific release tag instead of main branch
     local download_url="https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/${latest_version}/continuous_claude.sh"
+    local checksum_url="https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/${latest_version}/continuous_claude.sh.sha256"
     if ! curl -fsSL "$download_url" -o "$temp_file"; then
         echo "❌ Failed to download update" >&2
         rm -f "$temp_file"
         return 1
     fi
+    
+    # Download the checksum file
+    local checksum_file=$(mktemp)
+    if ! curl -fsSL "$checksum_url" -o "$checksum_file"; then
+        echo "❌ Failed to download checksum file" >&2
+        rm -f "$temp_file" "$checksum_file"
+        return 1
+    fi
+    
+    # Verify checksum
+    local expected_checksum
+    expected_checksum=$(cat "$checksum_file" | awk '{print $1}')
+    local actual_checksum
+    actual_checksum=$(sha256sum "$temp_file" | awk '{print $1}')
+    if [ "$expected_checksum" != "$actual_checksum" ]; then
+        echo "❌ Checksum verification failed! Update aborted." >&2
+        rm -f "$temp_file" "$checksum_file"
+        return 1
+    fi
+    rm -f "$checksum_file"
     
     # Verify the downloaded file is valid bash
     if ! bash -n "$temp_file" 2>/dev/null; then
