@@ -195,14 +195,23 @@ compare_versions() {
         ver2_arr[i]=0
     done
     
-    # Compare each component (only if numeric)
+    # Compare each component, fallback to string comparison if non-numeric
     for ((i=0; i<${#ver1_arr[@]}; i++)); do
-        # Ensure components are numeric before comparison
-        if [[ "${ver1_arr[i]}" =~ ^[0-9]+$ ]] && [[ "${ver2_arr[i]}" =~ ^[0-9]+$ ]]; then
-            if ((10#${ver1_arr[i]} < 10#${ver2_arr[i]})); then
+        local c1="${ver1_arr[i]}"
+        local c2="${ver2_arr[i]}"
+        if [[ "$c1" =~ ^[0-9]+$ ]] && [[ "$c2" =~ ^[0-9]+$ ]]; then
+            if ((10#$c1 < 10#$c2)); then
                 return 1
             fi
-            if ((10#${ver1_arr[i]} > 10#${ver2_arr[i]})); then
+            if ((10#$c1 > 10#$c2)); then
+                return 2
+            fi
+        else
+            # Fallback: string comparison for non-numeric components
+            if [[ "$c1" < "$c2" ]]; then
+                return 1
+            fi
+            if [[ "$c1" > "$c2" ]]; then
                 return 2
             fi
         fi
