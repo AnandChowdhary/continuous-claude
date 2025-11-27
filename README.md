@@ -153,6 +153,8 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 - `--dry-run`: Simulate execution without making changes
 - `--completion-signal <phrase>`: Phrase that agents output when entire project is complete (default: `CONTINUOUS_CLAUDE_PROJECT_COMPLETE`)
 - `--completion-threshold <num>`: Number of consecutive completion signals required to stop early (default: `3`)
+- `--max-calls-per-hour <num>`: Maximum Claude API calls per hour (rate limiting)
+- `--error-threshold <num>`: Number of errors per hour to trigger backoff (rate limiting)
 
 Any additional flags you provide that are not recognized by `continuous-claude` will be automatically forwarded to the underlying `claude` command. For example, you can pass `--allowedTools`, `--model`, or any other Claude Code CLI flags.
 
@@ -209,6 +211,15 @@ continuous-claude -p "add unit tests to all files" -m 50 --completion-threshold 
 
 # Use custom completion signal
 continuous-claude -p "fix all bugs" -m 20 --completion-signal "ALL_BUGS_FIXED" --completion-threshold 2
+
+# Rate limiting: limit to 80 API calls per hour
+continuous-claude -p "add tests" -m 100 --max-calls-per-hour 80
+
+# Rate limiting: backoff after 5 errors per hour
+continuous-claude -p "fix bugs" -m 50 --error-threshold 5
+
+# Combine rate limiting with other limits
+continuous-claude -p "add features" --max-duration 4h --max-calls-per-hour 60 --error-threshold 3
 
 # Explicitly specify owner and repo (useful if git remote is not set up or not a GitHub repo)
 continuous-claude -p "add features" -m 5 --owner myuser --repo myproject

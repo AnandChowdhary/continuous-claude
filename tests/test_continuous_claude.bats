@@ -1369,3 +1369,279 @@ setup() {
     run validate_arguments
     assert_success
 }
+
+# Rate limiting tests
+@test "parse_arguments handles max-calls-per-hour flag" {
+    source "$SCRIPT_PATH"
+    parse_arguments --max-calls-per-hour 80
+    
+    assert_equal "$MAX_CALLS_PER_HOUR" "80"
+}
+
+@test "parse_arguments handles error-threshold flag" {
+    source "$SCRIPT_PATH"
+    parse_arguments --error-threshold 5
+    
+    assert_equal "$ERROR_THRESHOLD" "5"
+}
+
+@test "validate_arguments fails with invalid max-calls-per-hour" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    MAX_CALLS_PER_HOUR="invalid"
+    
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --max-calls-per-hour must be a positive integer"
+}
+
+@test "validate_arguments fails with zero max-calls-per-hour" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    MAX_CALLS_PER_HOUR="0"
+    
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --max-calls-per-hour must be a positive integer"
+}
+
+@test "validate_arguments passes with valid max-calls-per-hour" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    MAX_CALLS_PER_HOUR="80"
+    
+    run validate_arguments
+    assert_success
+}
+
+@test "validate_arguments fails with invalid error-threshold" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    ERROR_THRESHOLD="invalid"
+    
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --error-threshold must be a positive integer"
+}
+
+@test "validate_arguments fails with zero error-threshold" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    ERROR_THRESHOLD="0"
+    
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --error-threshold must be a positive integer"
+}
+
+@test "validate_arguments passes with valid error-threshold" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    ERROR_THRESHOLD="5"
+    
+    run validate_arguments
+    assert_success
+}
+
+@test "record_rate_limit_call adds timestamp to array" {
+    source "$SCRIPT_PATH"
+    rate_limit_calls=()
+    
+    record_rate_limit_call
+    
+    assert [ ${#rate_limit_calls[@]} -eq 1 ]
+}
+
+@test "record_rate_limit_error adds timestamp to array" {
+    source "$SCRIPT_PATH"
+    rate_limit_errors=()
+    
+    record_rate_limit_error
+    
+    assert [ ${#rate_limit_errors[@]} -eq 1 ]
+}
+
+@test "count_calls_in_window counts recent calls" {
+    source "$SCRIPT_PATH"
+    rate_limit_calls=()
+    RATE_LIMIT_WINDOW=3600
+    
+    # Add a call
+    local current_time=$(date +%s)
+    rate_limit_calls+=("$current_time")
+    
+    run count_calls_in_window
+    assert_success
+    assert_output "1"
+}
+
+@test "count_calls_in_window ignores old calls" {
+    source "$SCRIPT_PATH"
+    rate_limit_calls=()
+    RATE_LIMIT_WINDOW=3600
+    
+    # Add an old call (2 hours ago)
+    local current_time=$(date +%s)
+    local old_time=$((current_time - 7200))
+    rate_limit_calls+=("$old_time")
+    
+    run count_calls_in_window
+    assert_success
+    assert_output "0"
+}
+
+@test "count_errors_in_window counts recent errors" {
+    source "$SCRIPT_PATH"
+    rate_limit_errors=()
+    RATE_LIMIT_WINDOW=3600
+    
+    # Add an error
+    local current_time=$(date +%s)
+    rate_limit_errors+=("$current_time")
+    
+    run count_errors_in_window
+    assert_success
+    assert_output "1"
+}
+
+@test "count_errors_in_window ignores old errors" {
+    source "$SCRIPT_PATH"
+    rate_limit_errors=()
+    RATE_LIMIT_WINDOW=3600
+    
+    # Add an old error (2 hours ago)
+    local current_time=$(date +%s)
+    local old_time=$((current_time - 7200))
+    rate_limit_errors+=("$old_time")
+    
+    run count_errors_in_window
+    assert_success
+    assert_output "0"
+}
+
+@test "calculate_rate_limit_wait returns 0 when under limit" {
+    source "$SCRIPT_PATH"
+    rate_limit_calls=()
+    RATE_LIMIT_WINDOW=3600
+    
+    # Add 5 calls, limit is 10
+    local current_time=$(date +%s)
+    for i in {1..5}; do
+        rate_limit_calls+=("$current_time")
+    done
+    
+    run calculate_rate_limit_wait 10
+    assert_success
+    assert_output "0"
+}
+
+@test "calculate_rate_limit_wait returns positive value when at limit" {
+    source "$SCRIPT_PATH"
+    rate_limit_calls=()
+    RATE_LIMIT_WINDOW=3600
+    
+    # Add 10 calls, limit is 10
+    local current_time=$(date +%s)
+    for i in {1..10}; do
+        rate_limit_calls+=("$current_time")
+    done
+    
+    run calculate_rate_limit_wait 10
+    assert_success
+    # Should return a positive wait time (approximately 3600 seconds)
+    local wait_time="$output"
+    assert [ "$wait_time" -gt 0 ]
+}
+
+@test "detect_rate_limit_error detects rate limit messages" {
+    source "$SCRIPT_PATH"
+    
+    run detect_rate_limit_error "Error: Rate limit exceeded"
+    assert_success
+    
+    run detect_rate_limit_error "429 Too Many Requests"
+    assert_success
+    
+    run detect_rate_limit_error "Session limit reached"
+    assert_success
+    
+    run detect_rate_limit_error "quota exceeded"
+    assert_success
+    
+    run detect_rate_limit_error "resets 7pm"
+    assert_success
+}
+
+@test "detect_rate_limit_error returns failure for non-rate-limit errors" {
+    source "$SCRIPT_PATH"
+    
+    run detect_rate_limit_error "Syntax error in code"
+    assert_failure
+    
+    run detect_rate_limit_error "File not found"
+    assert_failure
+    
+    run detect_rate_limit_error "Authentication failed"
+    assert_failure
+}
+
+@test "parse_rate_limit_wait_time extracts time from resets message" {
+    source "$SCRIPT_PATH"
+    
+    # This test is time-dependent, so we just verify it returns a reasonable value
+    run parse_rate_limit_wait_time "Session limit reached ∙ resets 7pm"
+    assert_success
+    # Should return a positive number
+    local wait_time="$output"
+    assert [ "$wait_time" -gt 0 ]
+}
+
+@test "parse_rate_limit_wait_time returns default for unknown format" {
+    source "$SCRIPT_PATH"
+    
+    run parse_rate_limit_wait_time "Rate limit exceeded"
+    assert_success
+    # Should return default of 300 seconds (5 minutes)
+    assert_output "300"
+}
+
+@test "check_rate_limit does nothing when no limits set" {
+    source "$SCRIPT_PATH"
+    MAX_CALLS_PER_HOUR=""
+    ERROR_THRESHOLD=""
+    rate_limit_calls=()
+    rate_limit_errors=()
+    
+    run check_rate_limit "(1/5)"
+    assert_success
+    # Should not output throttle message
+    refute_output --partial "Throttled"
+}
+
+@test "show_help includes rate limiting flags" {
+    source "$SCRIPT_PATH"
+    export -f show_help
+    run show_help
+    
+    assert_output --partial "--max-calls-per-hour"
+    assert_output --partial "--error-threshold"
+    assert_output --partial "rate limiting"
+}

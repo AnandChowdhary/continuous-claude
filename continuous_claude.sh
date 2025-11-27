@@ -65,6 +65,225 @@ i=1
 EXTRA_CLAUDE_FLAGS=()
 start_time=""
 
+# Rate limiting configuration
+MAX_CALLS_PER_HOUR=""
+ERROR_THRESHOLD=""
+# Rate limiting state (leaky bucket)
+rate_limit_calls=()      # Array of timestamps for calls in the current window
+rate_limit_errors=()     # Array of timestamps for errors in the current window
+RATE_LIMIT_WINDOW=3600   # 1 hour in seconds
+
+# Calculate how long to wait based on leaky bucket
+calculate_rate_limit_wait() {
+    local max_calls="$1"
+    local current_time=$(date +%s)
+    local window_start=$((current_time - RATE_LIMIT_WINDOW))
+    
+    # Count calls within the window
+    local call_count=0
+    local oldest_call=""
+    for ts in "${rate_limit_calls[@]}"; do
+        if [ "$ts" -ge "$window_start" ]; then
+            call_count=$((call_count + 1))
+            if [ -z "$oldest_call" ] || [ "$ts" -lt "$oldest_call" ]; then
+                oldest_call="$ts"
+            fi
+        fi
+    done
+    
+    # If we haven't hit the limit, no wait needed
+    if [ "$call_count" -lt "$max_calls" ]; then
+        echo "0"
+        return 0
+    fi
+    
+    # Calculate how long until the oldest call expires from the window
+    if [ -n "$oldest_call" ]; then
+        local wait_time=$((oldest_call + RATE_LIMIT_WINDOW - current_time))
+        if [ "$wait_time" -lt 0 ]; then
+            wait_time=0
+        fi
+        echo "$wait_time"
+    else
+        echo "0"
+    fi
+}
+
+# Record a call for rate limiting
+record_rate_limit_call() {
+    local current_time=$(date +%s)
+    rate_limit_calls+=("$current_time")
+    
+    # Clean up old entries
+    local window_start=$((current_time - RATE_LIMIT_WINDOW))
+    local new_calls=()
+    for ts in "${rate_limit_calls[@]}"; do
+        if [ "$ts" -ge "$window_start" ]; then
+            new_calls+=("$ts")
+        fi
+    done
+    rate_limit_calls=("${new_calls[@]}")
+}
+
+# Record an error for rate limiting
+record_rate_limit_error() {
+    local current_time=$(date +%s)
+    rate_limit_errors+=("$current_time")
+    
+    # Clean up old entries
+    local window_start=$((current_time - RATE_LIMIT_WINDOW))
+    local new_errors=()
+    for ts in "${rate_limit_errors[@]}"; do
+        if [ "$ts" -ge "$window_start" ]; then
+            new_errors+=("$ts")
+        fi
+    done
+    rate_limit_errors=("${new_errors[@]}")
+}
+
+# Count errors in the current window
+count_errors_in_window() {
+    local current_time=$(date +%s)
+    local window_start=$((current_time - RATE_LIMIT_WINDOW))
+    local error_count=0
+    
+    for ts in "${rate_limit_errors[@]}"; do
+        if [ "$ts" -ge "$window_start" ]; then
+            error_count=$((error_count + 1))
+        fi
+    done
+    
+    echo "$error_count"
+}
+
+# Count calls in the current window
+count_calls_in_window() {
+    local current_time=$(date +%s)
+    local window_start=$((current_time - RATE_LIMIT_WINDOW))
+    local call_count=0
+    
+    for ts in "${rate_limit_calls[@]}"; do
+        if [ "$ts" -ge "$window_start" ]; then
+            call_count=$((call_count + 1))
+        fi
+    done
+    
+    echo "$call_count"
+}
+
+# Check if we should throttle and handle backoff
+check_rate_limit() {
+    local iteration_display="$1"
+    
+    # Check max calls per hour limit
+    if [ -n "$MAX_CALLS_PER_HOUR" ] && [ "$MAX_CALLS_PER_HOUR" -gt 0 ]; then
+        local wait_time=$(calculate_rate_limit_wait "$MAX_CALLS_PER_HOUR")
+        if [ "$wait_time" -gt 0 ]; then
+            local calls_in_window=$(count_calls_in_window)
+            echo "" >&2
+            echo "⏱️  $iteration_display Throttled for $(format_duration $wait_time) (limit $calls_in_window/$MAX_CALLS_PER_HOUR per hour)" >&2
+            sleep "$wait_time"
+            return 0
+        fi
+    fi
+    
+    # Check error threshold limit
+    if [ -n "$ERROR_THRESHOLD" ] && [ "$ERROR_THRESHOLD" -gt 0 ]; then
+        local errors_in_window=$(count_errors_in_window)
+        if [ "$errors_in_window" -ge "$ERROR_THRESHOLD" ]; then
+            # Calculate backoff based on number of errors over threshold
+            local over_threshold=$((errors_in_window - ERROR_THRESHOLD + 1))
+            local backoff=$((60 * over_threshold))  # 1 minute per error over threshold
+            if [ "$backoff" -gt 1800 ]; then
+                backoff=1800  # Cap at 30 minutes
+            fi
+            echo "" >&2
+            echo "⏱️  $iteration_display Throttled for $(format_duration $backoff) (errors: $errors_in_window, threshold: $ERROR_THRESHOLD/hr)" >&2
+            sleep "$backoff"
+            return 0
+        fi
+    fi
+    
+    return 0
+}
+
+# Detect rate limit error from Claude CLI output
+detect_rate_limit_error() {
+    local error_output="$1"
+    
+    # Check for common rate limit patterns in Claude CLI output
+    if echo "$error_output" | grep -qi "rate.limit\|too.many.requests\|429\|quota\|limit.reached\|session.limit\|resets"; then
+        return 0  # Rate limit detected
+    fi
+    
+    return 1  # No rate limit detected
+}
+
+# Calculate wait time from Claude rate limit error message
+parse_rate_limit_wait_time() {
+    local error_output="$1"
+    
+    # Try to extract wait time from common formats like "resets 7pm", "retry after 60", etc.
+    # Format: "resets Xpm" or "resets Xam"
+    if [[ "$error_output" =~ resets[[:space:]]+([0-9]+)(am|pm|AM|PM) ]]; then
+        local hour="${BASH_REMATCH[1]}"
+        local ampm="${BASH_REMATCH[2]}"
+        
+        # Convert to 24-hour format (use 10# to force decimal interpretation)
+        if [[ "$ampm" =~ [pP][mM] ]] && [ "$((10#$hour))" -ne 12 ]; then
+            hour=$((10#$hour + 12))
+        elif [[ "$ampm" =~ [aA][mM] ]] && [ "$((10#$hour))" -eq 12 ]; then
+            hour=0
+        else
+            hour=$((10#$hour))
+        fi
+        
+        # Calculate seconds until that time (use 10# to handle leading zeros in time)
+        local current_hour=$(date +%H)
+        local current_min=$(date +%M)
+        local current_sec=$(date +%S)
+        
+        local current_secs=$((10#$current_hour * 3600 + 10#$current_min * 60 + 10#$current_sec))
+        local target_secs=$((hour * 3600))
+        
+        local wait_secs=$((target_secs - current_secs))
+        if [ "$wait_secs" -lt 0 ]; then
+            # Target is tomorrow
+            wait_secs=$((wait_secs + 86400))
+        fi
+        
+        # Add a small buffer
+        wait_secs=$((wait_secs + 60))
+        
+        echo "$wait_secs"
+        return 0
+    fi
+    
+    # Format: "retry after X" or "wait X seconds"
+    if [[ "$error_output" =~ (retry.after|wait)[[:space:]]+([0-9]+) ]]; then
+        echo "${BASH_REMATCH[2]}"
+        return 0
+    fi
+    
+    # Default: return 5 minutes if we detected rate limit but can't parse time
+    echo "300"
+    return 0
+}
+
+# Handle rate limit error with smart backoff
+handle_rate_limit_error() {
+    local iteration_display="$1"
+    local error_output="$2"
+    
+    local wait_time=$(parse_rate_limit_wait_time "$error_output")
+    
+    echo "" >&2
+    echo "⏱️  $iteration_display Rate limit detected, waiting $(format_duration $wait_time) before retry..." >&2
+    
+    sleep "$wait_time"
+    return 0
+}
+
 parse_duration() {
     # Parse a duration string like "2h", "30m", "1h30m", "90s" to seconds
     # Returns: number of seconds, or empty string on error
@@ -175,6 +394,8 @@ OPTIONAL FLAGS:
     --dry-run                     Simulate execution without making changes
     --completion-signal <phrase>  Phrase that agents output when project is complete (default: "CONTINUOUS_CLAUDE_PROJECT_COMPLETE")
     --completion-threshold <num>  Number of consecutive signals to stop early (default: 3)
+    --max-calls-per-hour <num>    Maximum Claude calls per hour (rate limiting)
+    --error-threshold <num>       Error count per hour to trigger backoff (rate limiting)
 
 COMMANDS:
     update                        Check for and install the latest version
@@ -219,6 +440,16 @@ EXAMPLES:
     # Use completion signal to stop early when project is done
     continuous-claude -p "Add unit tests to all files" -m 50 --owner myuser --repo myproject \\
         --completion-threshold 3
+
+    # Rate limiting: limit to 80 calls per hour
+    continuous-claude -p "Add tests" -m 100 --max-calls-per-hour 80 --owner myuser --repo myproject
+
+    # Rate limiting: backoff after 5 errors per hour
+    continuous-claude -p "Fix bugs" -m 50 --error-threshold 5 --owner myuser --repo myproject
+
+    # Combine rate limiting with other limits
+    continuous-claude -p "Add features" --max-duration 4h --max-calls-per-hour 60 --error-threshold 3 \\
+        --owner myuser --repo myproject
 
     # Check for and install updates
     continuous-claude update
@@ -624,6 +855,14 @@ parse_arguments() {
                 COMPLETION_THRESHOLD="$2"
                 shift 2
                 ;;
+            --max-calls-per-hour)
+                MAX_CALLS_PER_HOUR="$2"
+                shift 2
+                ;;
+            --error-threshold)
+                ERROR_THRESHOLD="$2"
+                shift 2
+                ;;
             *)
                 # Collect unknown flags to forward to claude
                 EXTRA_CLAUDE_FLAGS+=("$1")
@@ -699,6 +938,20 @@ validate_arguments() {
     if [ -n "$COMPLETION_THRESHOLD" ]; then
         if ! [[ "$COMPLETION_THRESHOLD" =~ ^[0-9]+$ ]] || [ "$COMPLETION_THRESHOLD" -lt 1 ]; then
             echo "❌ Error: --completion-threshold must be a positive integer" >&2
+            exit 1
+        fi
+    fi
+
+    if [ -n "$MAX_CALLS_PER_HOUR" ]; then
+        if ! [[ "$MAX_CALLS_PER_HOUR" =~ ^[0-9]+$ ]] || [ "$MAX_CALLS_PER_HOUR" -lt 1 ]; then
+            echo "❌ Error: --max-calls-per-hour must be a positive integer" >&2
+            exit 1
+        fi
+    fi
+
+    if [ -n "$ERROR_THRESHOLD" ]; then
+        if ! [[ "$ERROR_THRESHOLD" =~ ^[0-9]+$ ]] || [ "$ERROR_THRESHOLD" -lt 1 ]; then
+            echo "❌ Error: --error-threshold must be a positive integer" >&2
             exit 1
         fi
     fi
@@ -1411,6 +1664,26 @@ handle_iteration_error() {
     local error_type="$2"
     local error_output="$3"
     
+    # Record error for rate limiting
+    record_rate_limit_error
+    
+    # Check if this is a rate limit error from Claude
+    local error_text=""
+    if [ -f "$ERROR_LOG" ] && [ -s "$ERROR_LOG" ]; then
+        error_text=$(cat "$ERROR_LOG")
+    fi
+    if [ -z "$error_text" ] && [ -n "$error_output" ]; then
+        error_text="$error_output"
+    fi
+    
+    if detect_rate_limit_error "$error_text"; then
+        handle_rate_limit_error "$iteration_display" "$error_text"
+        # Don't count rate limit errors toward consecutive error limit
+        error_count=$((error_count - 1 > 0 ? error_count - 1 : 0))
+        extra_iterations=$((extra_iterations + 1))
+        return 1
+    fi
+    
     error_count=$((error_count + 1))
     extra_iterations=$((extra_iterations + 1))
     
@@ -1521,6 +1794,9 @@ execute_single_iteration() {
     local iteration_display=$(get_iteration_display $iteration_num $MAX_RUNS $extra_iterations)
     echo "🔄 $iteration_display Starting iteration..." >&2
 
+    # Check rate limits before proceeding
+    check_rate_limit "$iteration_display"
+
     # Get current branch and create iteration branch
     local main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
     local branch_name=""
@@ -1569,6 +1845,9 @@ $notes_content
     enhanced_prompt+="$PROMPT_NOTES_GUIDELINES"
 
     echo "🤖 $iteration_display Running Claude Code..." >&2
+    
+    # Record call for rate limiting
+    record_rate_limit_call
     
     local result
     local claude_exit_code=0
