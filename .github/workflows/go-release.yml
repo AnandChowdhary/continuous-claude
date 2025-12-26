@@ -1,0 +1,188 @@
+name: Go Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.out
+          fail_ci_if_error: false
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Get version info
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_OUTPUT
+          echo "git_commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          BINARY_NAME=continuous-claude
+          if [ "$GOOS" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          OUTPUT_NAME="${BINARY_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "$GOOS" = "windows" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}.exe"
+          fi
+
+          go build -ldflags "-s -w \
+            -X main.Version=${{ steps.version.outputs.version }} \
+            -X main.BuildDate=${{ steps.version.outputs.build_date }} \
+            -X main.GitCommit=${{ steps.version.outputs.git_commit }}" \
+            -o "build/${OUTPUT_NAME}" ./cmd/continuous-claude
+
+          # Create checksum
+          cd build && sha256sum "${OUTPUT_NAME}" > "${OUTPUT_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: continuous-claude-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "continuous-claude-*" -o -name "*.sha256" \) -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          PREV_TAG=$(git describe --tags --abbrev=0 ${VERSION}^ 2>/dev/null || echo "")
+
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log ${PREV_TAG}..${VERSION} --pretty=format:"- %s (%h)" --no-merges)
+          else
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges -20)
+          fi
+
+          cat > release_notes.md << EOF
+          ## What's Changed
+
+          ${COMMITS}
+
+          ## Installation
+
+          ### Linux (amd64)
+          \`\`\`bash
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/${VERSION}/continuous-claude-linux-amd64 -o continuous-claude
+          chmod +x continuous-claude
+          sudo mv continuous-claude /usr/local/bin/
+          \`\`\`
+
+          ### macOS (Apple Silicon)
+          \`\`\`bash
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/${VERSION}/continuous-claude-darwin-arm64 -o continuous-claude
+          chmod +x continuous-claude
+          sudo mv continuous-claude /usr/local/bin/
+          \`\`\`
+
+          ### macOS (Intel)
+          \`\`\`bash
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/${VERSION}/continuous-claude-darwin-amd64 -o continuous-claude
+          chmod +x continuous-claude
+          sudo mv continuous-claude /usr/local/bin/
+          \`\`\`
+
+          ### Windows
+          Download \`continuous-claude-windows-amd64.exe\` from the assets below.
+
+          ## Verify Checksums
+
+          Each binary has a corresponding \`.sha256\` file. Verify with:
+          \`\`\`bash
+          sha256sum -c continuous-claude-<os>-<arch>.sha256
+          \`\`\`
+          EOF
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "release/*"
+          bodyFile: release_notes.md
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
