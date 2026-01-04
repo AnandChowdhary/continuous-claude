@@ -65,6 +65,10 @@ i=1
 EXTRA_CLAUDE_FLAGS=()
 start_time=""
 
+# Wait mode configuration
+WAIT_MODE=false
+WAIT_BUFFER_SECONDS=10  # Configurable: seconds to wait after reset time before retrying
+
 parse_duration() {
     # Parse a duration string like "2h", "30m", "1h30m", "90s" to seconds
     # Returns: number of seconds, or empty string on error
@@ -142,6 +146,175 @@ format_duration() {
     echo "$result"
 }
 
+parse_reset_time() {
+    # Parse reset time string and return epoch seconds when the limit resets
+    # Handles: "7pm", "7:30pm", "7:30 PM", "19:00", "7 PM", "3:30pm"
+    # Returns: epoch seconds, or empty string on error
+    local time_str="$1"
+
+    # Normalize: remove extra spaces, convert to lowercase
+    time_str=$(echo "$time_str" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]*//g')
+
+    local hour=""
+    local minute="0"
+    local is_pm=false
+    local is_am=false
+
+    # Check for am/pm suffix
+    if [[ "$time_str" == *"pm" ]]; then
+        is_pm=true
+        time_str="${time_str%pm}"
+    elif [[ "$time_str" == *"am" ]]; then
+        is_am=true
+        time_str="${time_str%am}"
+    fi
+
+    # Parse hour:minute or just hour
+    if [[ "$time_str" =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
+        hour="${BASH_REMATCH[1]}"
+        minute="${BASH_REMATCH[2]}"
+    elif [[ "$time_str" =~ ^([0-9]{1,2})$ ]]; then
+        hour="${BASH_REMATCH[1]}"
+    else
+        return 1
+    fi
+
+    # Convert to 24-hour format
+    hour=$((10#$hour))  # Force decimal interpretation
+    minute=$((10#$minute))
+
+    if [ "$is_pm" = true ] && [ $hour -lt 12 ]; then
+        hour=$((hour + 12))
+    elif [ "$is_am" = true ] && [ $hour -eq 12 ]; then
+        hour=0
+    fi
+
+    # Get current date components
+    local current_epoch=$(date +%s)
+    local today_date=$(date +%Y-%m-%d)
+
+    # Build target datetime string and convert to epoch
+    local target_time=$(printf "%02d:%02d:00" $hour $minute)
+    local target_epoch
+
+    # Use date command to parse (works on macOS and Linux)
+    if date --version >/dev/null 2>&1; then
+        # GNU date (Linux)
+        target_epoch=$(date -d "$today_date $target_time" +%s 2>/dev/null)
+    else
+        # BSD date (macOS)
+        target_epoch=$(date -j -f "%Y-%m-%d %H:%M:%S" "$today_date $target_time" +%s 2>/dev/null)
+    fi
+
+    if [ -z "$target_epoch" ]; then
+        return 1
+    fi
+
+    # Handle midnight rollover: if target is in the past, add 24 hours
+    if [ $target_epoch -le $current_epoch ]; then
+        target_epoch=$((target_epoch + 86400))
+    fi
+
+    echo "$target_epoch"
+    return 0
+}
+
+detect_session_limit() {
+    # Check if the given text contains a session limit message
+    # Returns: reset time string if found, empty otherwise
+    # Input can be stderr content or error log content
+    local text="$1"
+
+    # Pattern: "Session limit reached" or similar, with "resets" and a time
+    # Examples:
+    #   "Session limit reached ∙ resets 7pm"
+    #   "5-hour limit reached ∙ resets 8pm"
+    #   "Usage limit reached ∙ resets 3:30pm"
+
+    local reset_time=""
+
+    # Match various patterns - extract the time portion after "resets"
+    # Handle both "resets" and "reset" (with or without 's')
+    if echo "$text" | grep -qiE "(session|usage|hour).*limit.*reached.*resets?" 2>/dev/null; then
+        # Extract the time portion using sed
+        reset_time=$(echo "$text" | grep -oiE "resets?[[:space:]]*[0-9]{1,2}(:[0-9]{2})?[[:space:]]*(am|pm)?" | head -1 | sed -E 's/resets?[[:space:]]*//i')
+    fi
+
+    if [ -n "$reset_time" ]; then
+        echo "$reset_time"
+        return 0
+    fi
+
+    return 1
+}
+
+wait_for_session_reset() {
+    # Wait until the session resets
+    # Note: If system sleeps during wait, timer pauses. Users can wrap with
+    # 'caffeinate -i' on macOS to prevent sleep if needed.
+    local reset_epoch="$1"
+    local buffer_seconds="${WAIT_BUFFER_SECONDS:-10}"
+
+    local target_epoch=$((reset_epoch + buffer_seconds))
+    local current_epoch=$(date +%s)
+    local wait_seconds=$((target_epoch - current_epoch))
+
+    if [ $wait_seconds -le 0 ]; then
+        echo "   Reset time already passed, continuing immediately..." >&2
+        return 0
+    fi
+
+    # Format the target time for display
+    local target_display
+    if date --version >/dev/null 2>&1; then
+        target_display=$(date -d "@$target_epoch" "+%H:%M:%S")
+    else
+        target_display=$(date -r "$target_epoch" "+%H:%M:%S")
+    fi
+
+    echo "" >&2
+    echo "⏰ Session limit reached. Waiting until $target_display ($(format_duration $wait_seconds) from now)..." >&2
+    echo "   (Includes ${buffer_seconds}s buffer after reset time)" >&2
+    echo "   Tip: Use 'caffeinate -i continuous-claude ...' on macOS to prevent sleep" >&2
+    echo "   Press Ctrl+C to cancel and exit" >&2
+
+    sleep $wait_seconds
+
+    echo "" >&2
+    echo "✅ Wait complete. Resuming..." >&2
+    return 0
+}
+
+handle_session_limit() {
+    # Check for session limit and wait if --wait mode is enabled
+    # Returns 0 if session limit was handled (should retry)
+    # Returns 1 if no session limit detected or --wait not enabled
+    local error_text="$1"
+
+    if [ "$WAIT_MODE" != "true" ]; then
+        return 1
+    fi
+
+    local reset_time
+    reset_time=$(detect_session_limit "$error_text")
+    if [ $? -ne 0 ] || [ -z "$reset_time" ]; then
+        return 1
+    fi
+
+    echo "" >&2
+    echo "🚫 Session limit detected! Reset time: $reset_time" >&2
+
+    local reset_epoch
+    reset_epoch=$(parse_reset_time "$reset_time")
+    if [ $? -ne 0 ] || [ -z "$reset_epoch" ]; then
+        echo "⚠️  Could not parse reset time '$reset_time'. Continuing without waiting." >&2
+        return 1
+    fi
+
+    wait_for_session_reset "$reset_epoch"
+    return 0
+}
+
 show_help() {
     cat << EOF
 Continuous Claude - Run Claude Code iteratively with automatic PR management
@@ -175,6 +348,7 @@ OPTIONAL FLAGS:
     --dry-run                     Simulate execution without making changes
     --completion-signal <phrase>  Phrase that agents output when project is complete (default: "CONTINUOUS_CLAUDE_PROJECT_COMPLETE")
     --completion-threshold <num>  Number of consecutive signals to stop early (default: 3)
+    -w, --wait                    Wait for session limit reset instead of exiting
 
 COMMANDS:
     update                        Check for and install the latest version
@@ -219,6 +393,12 @@ EXAMPLES:
     # Use completion signal to stop early when project is done
     continuous-claude -p "Add unit tests to all files" -m 50 --owner myuser --repo myproject \\
         --completion-threshold 3
+
+    # Wait for session limit to reset instead of failing (useful for cheaper plans)
+    continuous-claude -p "Long running task" --max-cost 50.00 --wait
+
+    # Prevent system sleep during wait (macOS)
+    caffeinate -i continuous-claude -p "Long task" --max-cost 50.00 --wait
 
     # Check for and install updates
     continuous-claude update
@@ -623,6 +803,10 @@ parse_arguments() {
             --completion-threshold)
                 COMPLETION_THRESHOLD="$2"
                 shift 2
+                ;;
+            -w|--wait)
+                WAIT_MODE=true
+                shift
                 ;;
             *)
                 # Collect unknown flags to forward to claude
@@ -1363,11 +1547,26 @@ run_claude_iteration() {
     
     # If claude failed, check for error info in both stderr and stdout (JSON)
     if [ $exit_code -ne 0 ]; then
+        # Check for session limit in stderr first
+        if [ -f "$temp_stderr" ] && [ -s "$temp_stderr" ]; then
+            local stderr_content=$(cat "$temp_stderr")
+            if handle_session_limit "$stderr_content"; then
+                # Session limit was handled, signal retry
+                rm -f "$temp_stdout" "$temp_stderr"
+                return 2  # Special return code for "retry after wait"
+            fi
+        fi
+
         # If stderr is empty, try to extract error from JSON stdout
         if [ ! -s "$error_log" ] && [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
             # Check if stdout contains JSON with error info
             local json_error=$(cat "$temp_stdout" | jq -r 'if type == "array" then .[-1] else . end | if .is_error == true then .result // .error // "Unknown error" else empty end' 2>/dev/null || echo "")
             if [ -n "$json_error" ]; then
+                # Check for session limit in JSON error
+                if handle_session_limit "$json_error"; then
+                    rm -f "$temp_stdout" "$temp_stderr"
+                    return 2  # Special return code for "retry after wait"
+                fi
                 echo "$json_error" > "$error_log"
                 echo "$json_error" >&2
             fi
@@ -1584,7 +1783,20 @@ $notes_content
     local result
     local claude_exit_code=0
     result=$(run_claude_iteration "$enhanced_prompt" "$ADDITIONAL_FLAGS" "$ERROR_LOG") || claude_exit_code=$?
-    
+
+    # Handle session limit wait (return code 2 = retry after wait)
+    if [ $claude_exit_code -eq 2 ]; then
+        echo "" >&2
+        echo "🔄 $iteration_display Retrying after session limit wait..." >&2
+        # Clean up branch before retry
+        if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
+            git checkout "$main_branch" >/dev/null 2>&1
+            git branch -D "$branch_name" >/dev/null 2>&1 || true
+        fi
+        # Return 2 to signal main_loop to retry without incrementing
+        return 2
+    fi
+
     if [ $claude_exit_code -ne 0 ]; then
         echo "" >&2
         echo "⚠️  Claude Code command failed with exit code: $claude_exit_code" >&2
@@ -1658,9 +1870,17 @@ main_loop() {
         if [ "$should_continue" = "false" ]; then
             break
         fi
-        
-        execute_single_iteration $i
-        
+
+        local iteration_result=0
+        execute_single_iteration $i || iteration_result=$?
+
+        # Handle session limit retry (return code 2)
+        if [ $iteration_result -eq 2 ]; then
+            # Retry without incrementing iteration counter
+            sleep 1
+            continue
+        fi
+
         sleep 1
         i=$((i + 1))
     done

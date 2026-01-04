@@ -1586,3 +1586,332 @@ setup() {
     # Should show check status instead
     assert_output --partial "Found"
 }
+
+# ============================================
+# Session Limit Wait Feature Tests
+# ============================================
+
+@test "parse_arguments handles wait flag short form" {
+    source "$SCRIPT_PATH"
+    WAIT_MODE="false"
+    parse_arguments -w
+
+    assert_equal "$WAIT_MODE" "true"
+}
+
+@test "parse_arguments handles wait flag long form" {
+    source "$SCRIPT_PATH"
+    WAIT_MODE="false"
+    parse_arguments --wait
+
+    assert_equal "$WAIT_MODE" "true"
+}
+
+@test "parse_arguments sets default wait mode to false" {
+    source "$SCRIPT_PATH"
+
+    assert_equal "$WAIT_MODE" "false"
+}
+
+@test "parse_reset_time parses simple pm time" {
+    source "$SCRIPT_PATH"
+
+    # Mock date to return fixed current time (2pm)
+    function date() {
+        case "$1" in
+            +%s)
+                echo "1704207600"  # 2024-01-02 14:00:00 UTC
+                ;;
+            +%Y-%m-%d)
+                echo "2024-01-02"
+                ;;
+            --version)
+                return 1  # Simulate BSD date (macOS)
+                ;;
+            -j)
+                # BSD date format for parsing
+                if [[ "$*" == *"19:00:00"* ]]; then
+                    echo "1704225600"  # 2024-01-02 19:00:00 UTC
+                fi
+                ;;
+        esac
+    }
+    export -f date
+
+    run parse_reset_time "7pm"
+
+    assert_success
+    # Should return epoch seconds for 7pm (19:00)
+    assert [ -n "$output" ]
+}
+
+@test "parse_reset_time parses time with minutes" {
+    source "$SCRIPT_PATH"
+
+    # Mock date to return fixed current time
+    function date() {
+        case "$1" in
+            +%s)
+                echo "1704207600"  # 2024-01-02 14:00:00 UTC
+                ;;
+            +%Y-%m-%d)
+                echo "2024-01-02"
+                ;;
+            --version)
+                return 1  # Simulate BSD date (macOS)
+                ;;
+            -j)
+                # BSD date format for parsing
+                echo "1704227400"  # 2024-01-02 19:30:00 UTC
+                ;;
+        esac
+    }
+    export -f date
+
+    run parse_reset_time "7:30pm"
+
+    assert_success
+    assert [ -n "$output" ]
+}
+
+@test "parse_reset_time handles uppercase PM" {
+    source "$SCRIPT_PATH"
+
+    function date() {
+        case "$1" in
+            +%s)
+                echo "1704207600"
+                ;;
+            +%Y-%m-%d)
+                echo "2024-01-02"
+                ;;
+            --version)
+                return 1
+                ;;
+            -j)
+                echo "1704225600"
+                ;;
+        esac
+    }
+    export -f date
+
+    run parse_reset_time "7 PM"
+
+    assert_success
+    assert [ -n "$output" ]
+}
+
+@test "parse_reset_time handles am time" {
+    source "$SCRIPT_PATH"
+
+    function date() {
+        case "$1" in
+            +%s)
+                echo "1704207600"  # 2pm, so 10am tomorrow
+                ;;
+            +%Y-%m-%d)
+                echo "2024-01-02"
+                ;;
+            --version)
+                return 1
+                ;;
+            -j)
+                echo "1704186000"  # 10:00 AM
+                ;;
+        esac
+    }
+    export -f date
+
+    run parse_reset_time "10am"
+
+    assert_success
+    assert [ -n "$output" ]
+}
+
+@test "parse_reset_time fails with invalid time" {
+    source "$SCRIPT_PATH"
+
+    run parse_reset_time "invalid"
+
+    assert_failure
+}
+
+@test "parse_reset_time fails with empty input" {
+    source "$SCRIPT_PATH"
+
+    run parse_reset_time ""
+
+    assert_failure
+}
+
+@test "detect_session_limit finds standard session limit message" {
+    source "$SCRIPT_PATH"
+
+    local message="Session limit reached ∙ resets 7pm"
+
+    run detect_session_limit "$message"
+
+    assert_success
+    assert_output "7pm"
+}
+
+@test "detect_session_limit finds session limit with time and minutes" {
+    source "$SCRIPT_PATH"
+
+    local message="Session limit reached ∙ resets 7:30pm"
+
+    run detect_session_limit "$message"
+
+    assert_success
+    assert_output "7:30pm"
+}
+
+@test "detect_session_limit finds usage limit message" {
+    source "$SCRIPT_PATH"
+
+    local message="Usage limit reached ∙ resets 8pm"
+
+    run detect_session_limit "$message"
+
+    assert_success
+    assert_output "8pm"
+}
+
+@test "detect_session_limit finds hour limit message" {
+    source "$SCRIPT_PATH"
+
+    local message="5-hour limit reached ∙ resets 3pm"
+
+    run detect_session_limit "$message"
+
+    assert_success
+    assert_output "3pm"
+}
+
+@test "detect_session_limit returns failure for non-limit message" {
+    source "$SCRIPT_PATH"
+
+    local message="Some other error occurred"
+
+    run detect_session_limit "$message"
+
+    assert_failure
+}
+
+@test "detect_session_limit handles case insensitivity" {
+    source "$SCRIPT_PATH"
+
+    local message="SESSION LIMIT REACHED ∙ RESETS 9PM"
+
+    run detect_session_limit "$message"
+
+    assert_success
+}
+
+@test "handle_session_limit returns failure when wait mode disabled" {
+    source "$SCRIPT_PATH"
+
+    WAIT_MODE="false"
+    local message="Session limit reached ∙ resets 7pm"
+
+    run handle_session_limit "$message"
+
+    assert_failure
+}
+
+@test "handle_session_limit returns failure for non-limit message" {
+    source "$SCRIPT_PATH"
+
+    WAIT_MODE="true"
+    local message="Some other error occurred"
+
+    run handle_session_limit "$message"
+
+    assert_failure
+}
+
+@test "show_help includes wait flag documentation" {
+    source "$SCRIPT_PATH"
+    export -f show_help
+
+    run show_help
+
+    assert_output --partial "-w, --wait"
+    assert_output --partial "Wait for session limit reset"
+}
+
+@test "show_help includes caffeinate example" {
+    source "$SCRIPT_PATH"
+    export -f show_help
+
+    run show_help
+
+    assert_output --partial "caffeinate -i continuous-claude"
+}
+
+@test "run_claude_iteration returns 2 on session limit with wait mode" {
+    source "$SCRIPT_PATH"
+
+    WAIT_MODE="true"
+
+    # Mock claude to output session limit error
+    function claude() {
+        echo "Session limit reached ∙ resets 7pm" >&2
+        return 1
+    }
+
+    # Mock parse_reset_time to return a time in the past (so wait completes immediately)
+    function parse_reset_time() {
+        echo "$(($(command date +%s) - 100))"  # 100 seconds in the past
+        return 0
+    }
+
+    # Mock detect_session_limit
+    function detect_session_limit() {
+        echo "7pm"
+        return 0
+    }
+
+    # Mock sleep to do nothing
+    function sleep() {
+        return 0
+    }
+
+    # Mock format_duration
+    function format_duration() {
+        echo "0s"
+    }
+
+    export -f claude parse_reset_time detect_session_limit sleep format_duration
+
+    local error_log=$(mktemp)
+
+    run run_claude_iteration "test prompt" "--output-format json" "$error_log"
+
+    # Should return 2 (session limit retry signal)
+    assert [ $status -eq 2 ]
+
+    rm -f "$error_log"
+}
+
+@test "run_claude_iteration returns normal exit code when wait mode disabled" {
+    source "$SCRIPT_PATH"
+
+    WAIT_MODE="false"
+
+    # Mock claude to output session limit error
+    function claude() {
+        echo "Session limit reached ∙ resets 7pm" >&2
+        return 1
+    }
+    export -f claude
+
+    local error_log=$(mktemp)
+
+    run run_claude_iteration "test prompt" "--output-format json" "$error_log"
+
+    # Should return 1 (normal failure), not 2
+    assert [ $status -eq 1 ]
+
+    rm -f "$error_log"
+}
