@@ -2,7 +2,7 @@
 
 VERSION="v0.16.0"
 
-ADDITIONAL_FLAGS="--dangerously-skip-permissions --output-format json"
+ADDITIONAL_FLAGS="--dangerously-skip-permissions --output-format stream-json --verbose"
 
 NOTES_FILE="SHARED_TASK_NOTES.md"
 AUTO_UPDATE=false
@@ -1404,6 +1404,7 @@ run_claude_iteration() {
     local prompt="$1"
     local flags="$2"
     local error_log="$3"
+    local iteration_display="$4"
 
     if [ "$DRY_RUN" = "true" ]; then
         echo "🤖 (DRY RUN) Would run Claude Code with prompt: $prompt" >&2
@@ -1416,18 +1417,43 @@ run_claude_iteration() {
     local temp_stdout=$(mktemp)
     local temp_stderr=$(mktemp)
     local exit_code=0
-    
-    # Capture both stdout and stderr to temp files
-    claude -p "$prompt" $flags "${EXTRA_CLAUDE_FLAGS[@]}" >"$temp_stdout" 2>"$temp_stderr" || exit_code=$?
-    
-    # Output stdout (JSON result) so caller can capture it
+
+    # Stream stdout (stream-json) to terminal in human-readable format while capturing raw JSON
+    # Filter extracts text from assistant messages for display
+    set -o pipefail
+    claude -p "$prompt" $flags "${EXTRA_CLAUDE_FLAGS[@]}" 2> >(tee "$temp_stderr" >&2) | \
+        tee "$temp_stdout" | \
+        while IFS= read -r line; do
+            # Extract text from assistant messages for human-readable display
+            text=$(echo "$line" | jq -r '
+                if .type == "assistant" then
+                    .message.content[]? | select(.type == "text") | .text // empty
+                elif .type == "result" then
+                    empty
+                else
+                    empty
+                end
+            ' 2>/dev/null)
+            if [ -n "$text" ]; then
+                # Indent each line with the iteration prefix
+                echo "$text" | while IFS= read -r output_line; do
+                    printf "   %s %s\n" "$iteration_display" "$output_line" >&2
+                done
+            fi
+        done
+    exit_code=${PIPESTATUS[0]}
+    set +o pipefail
+
+    # Wait for background processes to complete
+    wait
+
+    # Output captured stdout (JSON result) so caller can capture it
     if [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
         cat "$temp_stdout"
     fi
-    
-    # Display stderr to terminal and save to error log
+
+    # Save stderr to error log (already displayed in real-time via tee)
     if [ -f "$temp_stderr" ] && [ -s "$temp_stderr" ]; then
-        cat "$temp_stderr" >&2
         cat "$temp_stderr" > "$error_log"
     fi
     
@@ -1435,8 +1461,8 @@ run_claude_iteration() {
     if [ $exit_code -ne 0 ]; then
         # If stderr is empty, try to extract error from JSON stdout
         if [ ! -s "$error_log" ] && [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
-            # Check if stdout contains JSON with error info
-            local json_error=$(cat "$temp_stdout" | jq -r 'if type == "array" then .[-1] else . end | if .is_error == true then .result // .error // "Unknown error" else empty end' 2>/dev/null || echo "")
+            # Check if stdout contains JSON with error info (stream-json format)
+            local json_error=$(cat "$temp_stdout" | jq -s -r '.[-1] | if .is_error == true then .result // .error // "Unknown error" else empty end' 2>/dev/null || echo "")
             if [ -n "$json_error" ]; then
                 echo "$json_error" > "$error_log"
                 echo "$json_error" >&2
@@ -1486,7 +1512,7 @@ ${review_prompt}"
     # Run Claude with the reviewer prompt
     local result
     local claude_exit_code=0
-    result=$(run_claude_iteration "$full_reviewer_prompt" "$ADDITIONAL_FLAGS" "$error_log") || claude_exit_code=$?
+    result=$(run_claude_iteration "$full_reviewer_prompt" "$ADDITIONAL_FLAGS" "$error_log" "$iteration_display") || claude_exit_code=$?
 
     if [ $claude_exit_code -ne 0 ]; then
         echo "❌ $iteration_display Reviewer pass failed with exit code: $claude_exit_code" >&2
@@ -1500,8 +1526,8 @@ ${review_prompt}"
         return 1
     fi
 
-    # Extract and accumulate cost from reviewer
-    local reviewer_cost=$(echo "$result" | jq -r 'if type == "array" then .[-1].total_cost_usd // empty else .total_cost_usd // empty end')
+    # Extract and accumulate cost from reviewer (stream-json format)
+    local reviewer_cost=$(echo "$result" | jq -s -r '.[-1].total_cost_usd // empty')
     if [ -n "$reviewer_cost" ]; then
         printf "💰 $iteration_display Reviewer cost: \$%.3f\n" "$reviewer_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $reviewer_cost}")
@@ -1514,12 +1540,13 @@ ${review_prompt}"
 parse_claude_result() {
     local result="$1"
     
-    if ! echo "$result" | jq -e . >/dev/null 2>&1; then
+    # For stream-json format: validate by slurping and checking last element
+    if ! echo "$result" | jq -s -e '.[-1]' >/dev/null 2>&1; then
         echo "invalid_json"
         return 1
     fi
-    
-    local is_error=$(echo "$result" | jq -r 'if type == "array" then .[-1].is_error // false else .is_error // false end')
+
+    local is_error=$(echo "$result" | jq -s -r '.[-1].is_error // false')
     if [ "$is_error" = "true" ]; then
         echo "claude_error"
         return 1
@@ -1562,7 +1589,7 @@ handle_iteration_error() {
             echo "" >&2
             echo "❌ $iteration_display Error in Claude Code response ($error_count consecutive errors):" >&2
             echo "" >&2
-            echo "$error_output" | jq -r 'if type == "array" then .[-1].result // .[-1] else .result // . end' >&2
+            echo "$error_output" | jq -s -r '.[-1].result // .[-1] // empty' >&2
             echo "" >&2
             ;;
     esac
@@ -1581,13 +1608,9 @@ handle_iteration_success() {
     local branch_name="$3"
     local main_branch="$4"
     
-    echo "📝 $iteration_display Output:" >&2
-    local result_text=$(echo "$result" | jq -r 'if type == "array" then .[-1].result // empty else .result // empty end')
-    if [ -n "$result_text" ]; then
-        echo "$result_text"
-    else
-        echo "(no output)" >&2
-    fi
+    # For stream-json format: slurp newline-delimited JSON and get result from last object
+    # (Output already displayed in real-time via streaming)
+    local result_text=$(echo "$result" | jq -s -r '.[-1].result // empty')
 
     # Check for completion signal in the output
     if [ -n "$result_text" ] && [[ "$result_text" == *"$COMPLETION_SIGNAL"* ]]; then
@@ -1602,7 +1625,8 @@ handle_iteration_success() {
         completion_signal_count=0
     fi
 
-    local cost=$(echo "$result" | jq -r 'if type == "array" then .[-1].total_cost_usd // empty else .total_cost_usd // empty end')
+    # For stream-json format: slurp and get cost from last object
+    local cost=$(echo "$result" | jq -s -r '.[-1].total_cost_usd // empty')
     if [ -n "$cost" ]; then
         echo "" >&2
         printf "💰 $iteration_display Cost: \$%.3f\n" "$cost" >&2
@@ -1710,7 +1734,7 @@ $notes_content
     
     local result
     local claude_exit_code=0
-    result=$(run_claude_iteration "$enhanced_prompt" "$ADDITIONAL_FLAGS" "$ERROR_LOG") || claude_exit_code=$?
+    result=$(run_claude_iteration "$enhanced_prompt" "$ADDITIONAL_FLAGS" "$ERROR_LOG" "$iteration_display") || claude_exit_code=$?
     
     if [ $claude_exit_code -ne 0 ]; then
         echo "" >&2
