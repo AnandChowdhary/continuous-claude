@@ -39,6 +39,10 @@ The file should NOT include:
 - Information that can be discovered by running tests/coverage
 - Unnecessary details"
 
+PROMPT_REVIEWER_CONTEXT="## CODE REVIEW CONTEXT
+
+You are performing a review pass on changes just made by another developer. This is NOT a new feature implementation - you are reviewing and validating existing changes using the instructions given below by the user. Feel free to use git commands to see what changes were made if it's helpful to you."
+
 PROMPT=""
 MAX_RUNS=""
 MAX_COST=""
@@ -63,6 +67,7 @@ total_cost=0
 completion_signal_count=0
 i=1
 EXTRA_CLAUDE_FLAGS=()
+REVIEW_PROMPT=""
 start_time=""
 
 parse_duration() {
@@ -175,6 +180,8 @@ OPTIONAL FLAGS:
     --dry-run                     Simulate execution without making changes
     --completion-signal <phrase>  Phrase that agents output when project is complete (default: "CONTINUOUS_CLAUDE_PROJECT_COMPLETE")
     --completion-threshold <num>  Number of consecutive signals to stop early (default: 3)
+    -r, --review-prompt <text>    Run a reviewer pass after each iteration to validate changes
+                                  (e.g., run build/lint/tests and fix any issues)
 
 COMMANDS:
     update                        Check for and install the latest version
@@ -219,6 +226,10 @@ EXAMPLES:
     # Use completion signal to stop early when project is done
     continuous-claude -p "Add unit tests to all files" -m 50 --owner myuser --repo myproject \\
         --completion-threshold 3
+
+    # Use a reviewer to validate and fix changes after each iteration
+    continuous-claude -p "Add new feature" -m 5 --owner myuser --repo myproject \\
+        -r "Run npm test and npm run lint, fix any failures"
 
     # Check for and install updates
     continuous-claude update
@@ -622,6 +633,10 @@ parse_arguments() {
                 ;;
             --completion-threshold)
                 COMPLETION_THRESHOLD="$2"
+                shift 2
+                ;;
+            -r|--review-prompt)
+                REVIEW_PROMPT="$2"
                 shift 2
                 ;;
             *)
@@ -1395,7 +1410,49 @@ run_claude_iteration() {
     
     # Cleanup temp files on success
     rm -f "$temp_stdout" "$temp_stderr"
-    
+
+    return 0
+}
+
+run_reviewer_iteration() {
+    local iteration_display="$1"
+    local review_prompt="$2"
+    local error_log="$3"
+
+    echo "🔍 $iteration_display Running reviewer pass..." >&2
+
+    # Build the reviewer prompt with context
+    local full_reviewer_prompt="${PROMPT_REVIEWER_CONTEXT}
+
+## USER REVIEW INSTRUCTIONS
+
+${review_prompt}"
+
+    # Run Claude with the reviewer prompt
+    local result
+    local claude_exit_code=0
+    result=$(run_claude_iteration "$full_reviewer_prompt" "$ADDITIONAL_FLAGS" "$error_log") || claude_exit_code=$?
+
+    if [ $claude_exit_code -ne 0 ]; then
+        echo "❌ $iteration_display Reviewer pass failed with exit code: $claude_exit_code" >&2
+        return 1
+    fi
+
+    # Parse and validate the result
+    local parse_result=$(parse_claude_result "$result")
+    if [ "$?" != "0" ]; then
+        echo "❌ $iteration_display Reviewer pass returned error: $parse_result" >&2
+        return 1
+    fi
+
+    # Extract and accumulate cost from reviewer
+    local reviewer_cost=$(echo "$result" | jq -r 'if type == "array" then .[-1].total_cost_usd // empty else .total_cost_usd // empty end')
+    if [ -n "$reviewer_cost" ]; then
+        printf "💰 $iteration_display Reviewer cost: \$%.3f\n" "$reviewer_cost" >&2
+        total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $reviewer_cost}")
+    fi
+
+    echo "✅ $iteration_display Reviewer pass completed" >&2
     return 0
 }
 
@@ -1607,7 +1664,27 @@ $notes_content
         handle_iteration_error "$iteration_display" "$parse_result" "$result"
         return 1
     fi
-    
+
+    # Run reviewer pass if REVIEW_PROMPT is set
+    if [ -n "$REVIEW_PROMPT" ]; then
+        if ! run_reviewer_iteration "$iteration_display" "$REVIEW_PROMPT" "$ERROR_LOG"; then
+            echo "❌ $iteration_display Reviewer failed, aborting iteration" >&2
+            # Clean up branch on reviewer failure
+            if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
+                git checkout "$main_branch" >/dev/null 2>&1
+                git branch -D "$branch_name" >/dev/null 2>&1 || true
+            fi
+            # Count as an error for consecutive error tracking
+            error_count=$((error_count + 1))
+            extra_iterations=$((extra_iterations + 1))
+            if [ $error_count -ge 3 ]; then
+                echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
+                exit 1
+            fi
+            return 1
+        fi
+    fi
+
     handle_iteration_success "$iteration_display" "$result" "$branch_name" "$main_branch"
     return 0
 }
