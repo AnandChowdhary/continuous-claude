@@ -48,6 +48,7 @@ MAX_RUNS=""
 MAX_COST=""
 MAX_DURATION=""
 ENABLE_COMMITS=true
+DISABLE_BRANCHES=false
 GIT_BRANCH_PREFIX="continuous-claude/"
 MERGE_STRATEGY="squash"
 GITHUB_OWNER=""
@@ -167,6 +168,7 @@ OPTIONAL FLAGS:
     --owner <owner>               GitHub repository owner (auto-detected from git remote if not provided)
     --repo <repo>                 GitHub repository name (auto-detected from git remote if not provided)
     --disable-commits             Disable automatic commits and PR creation
+    --disable-branches            Commit on current branch without creating branches or PRs
     --auto-update                 Automatically install updates when available
     --disable-updates             Skip all update checks and prompts
     --git-branch-prefix <prefix>  Branch prefix for iterations (default: "continuous-claude/")
@@ -201,6 +203,9 @@ EXAMPLES:
 
     # Run without commits (testing mode)
     continuous-claude -p "Refactor code" -m 3 --disable-commits
+
+    # Run with commits on current branch (no branches or PRs)
+    continuous-claude -p "Quick fixes" -m 3 --disable-branches
 
     # Use custom branch prefix and merge strategy
     continuous-claude -p "Feature work" -m 10 --owner myuser --repo myproject \\
@@ -593,6 +598,10 @@ parse_arguments() {
                 ;;
             --disable-commits)
                 ENABLE_COMMITS=false
+                shift
+                ;;
+            --disable-branches)
+                DISABLE_BRANCHES=true
                 shift
                 ;;
             --auto-update)
@@ -1207,12 +1216,58 @@ continuous_claude_commit() {
     return 0
 }
 
+commit_on_current_branch() {
+    local iteration_display="$1"
+
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        return 0
+    fi
+
+    # Check for any changes: modified tracked files, staged changes, or new untracked files
+    local has_changes=false
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        has_changes=true
+    fi
+
+    # Also check for untracked files (excluding ignored files)
+    if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        has_changes=true
+    fi
+
+    if [ "$has_changes" = "false" ]; then
+        echo "ℹ️  $iteration_display No changes to commit" >&2
+        return 0
+    fi
+
+    if [ "$DRY_RUN" = "true" ]; then
+        echo "💬 $iteration_display (DRY RUN) Would commit changes on current branch..." >&2
+        return 0
+    fi
+
+    echo "💬 $iteration_display Committing changes on current branch..." >&2
+
+    if ! claude -p "$PROMPT_COMMIT_MESSAGE" --allowedTools "Bash(git)" --dangerously-skip-permissions >/dev/null 2>&1; then
+        echo "⚠️  $iteration_display Failed to commit changes" >&2
+        return 1
+    fi
+
+    # Verify all changes were committed
+    if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        echo "⚠️  $iteration_display Commit command ran but changes still present" >&2
+        return 1
+    fi
+
+    local commit_title=$(git log -1 --format="%s")
+    echo "✅ $iteration_display Committed: $commit_title" >&2
+    return 0
+}
+
 list_worktrees() {
     if ! git rev-parse --git-dir > /dev/null 2>&1; then
         echo "❌ Error: Not in a git repository" >&2
         exit 1
     fi
-    
+
     echo "📋 Active Git Worktrees:"
     echo ""
     
@@ -1556,15 +1611,30 @@ handle_iteration_success() {
 
     echo "✅ $iteration_display Work completed" >&2
     if [ "$ENABLE_COMMITS" = "true" ]; then
-        if ! continuous_claude_commit "$iteration_display" "$branch_name" "$main_branch"; then
-            error_count=$((error_count + 1))
-            extra_iterations=$((extra_iterations + 1))
-            echo "❌ $iteration_display PR merge queue failed ($error_count consecutive errors)" >&2
-            if [ $error_count -ge 3 ]; then
-                echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
-                exit 1
+        if [ "$DISABLE_BRANCHES" = "true" ]; then
+            # Commit on current branch without PR workflow
+            if ! commit_on_current_branch "$iteration_display"; then
+                error_count=$((error_count + 1))
+                extra_iterations=$((extra_iterations + 1))
+                echo "❌ $iteration_display Commit failed ($error_count consecutive errors)" >&2
+                if [ $error_count -ge 3 ]; then
+                    echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
+                    exit 1
+                fi
+                return 1
             fi
-            return 1
+        else
+            # Full PR workflow
+            if ! continuous_claude_commit "$iteration_display" "$branch_name" "$main_branch"; then
+                error_count=$((error_count + 1))
+                extra_iterations=$((extra_iterations + 1))
+                echo "❌ $iteration_display PR merge queue failed ($error_count consecutive errors)" >&2
+                if [ $error_count -ge 3 ]; then
+                    echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
+                    exit 1
+                fi
+                return 1
+            fi
         fi
     else
         echo "⏭️  $iteration_display Skipping commits (--disable-commits flag set)" >&2
@@ -1593,7 +1663,7 @@ execute_single_iteration() {
     local main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
     local branch_name=""
     
-    if [ "$ENABLE_COMMITS" = "true" ]; then
+    if [ "$ENABLE_COMMITS" = "true" ] && [ "$DISABLE_BRANCHES" != "true" ]; then
         branch_name=$(create_iteration_branch "$iteration_display" "$iteration_num")
         if [ $? -ne 0 ] || [ -z "$branch_name" ]; then
             if git rev-parse --git-dir > /dev/null 2>&1; then

@@ -146,6 +146,7 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 - `--git-branch-prefix`: Prefix for git branch names (default: `continuous-claude/`)
 - `--notes-file`: Path to shared task notes file (default: `SHARED_TASK_NOTES.md`)
 - `--disable-commits`: Disable automatic git commits, PR creation, and merging (useful for testing)
+- `--disable-branches`: Commit on current branch without creating branches or PRs
 - `--worktree <name>`: Run in a git worktree for parallel execution (creates if needed)
 - `--worktree-base-dir <path>`: Base directory for worktrees (default: `../continuous-claude-worktrees`)
 - `--cleanup-worktree`: Remove worktree after completion
@@ -198,6 +199,9 @@ continuous-claude -p "add features" -m 5 --notes-file "PROJECT_CONTEXT.md"
 
 # Test without creating commits or PRs
 continuous-claude -p "test changes" -m 2 --disable-commits
+
+# Commit on current branch without branches or PRs
+continuous-claude -p "quick fixes" -m 3 --disable-branches
 
 # Pass additional Claude Code CLI flags (e.g., restrict tools)
 continuous-claude -p "add features" -m 3 --allowedTools "Write,Read"
