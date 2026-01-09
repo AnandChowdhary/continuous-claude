@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.18.0] - 2026-01-09
+
+### What's Changed
+
+- :sparkles: Add CI/CD failure retries (ee34ed2)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.17.0...v0.18.0
+
+
 ## [v0.17.0] - 2026-01-08
 
 ### What's Changed
