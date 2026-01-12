@@ -1619,6 +1619,7 @@ ${review_prompt}"
     if [ -n "$reviewer_cost" ]; then
         printf "💰 $iteration_display Reviewer cost: \$%.3f\n" "$reviewer_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $reviewer_cost}")
+        printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
     echo "✅ $iteration_display Reviewer pass completed" >&2
@@ -1685,6 +1686,7 @@ run_ci_fix_iteration() {
     if [ -n "$fix_cost" ]; then
         printf "💰 $iteration_display CI fix cost: \$%.3f\n" "$fix_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $fix_cost}")
+        printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
     # Check if there are any changes to commit/push
@@ -1856,8 +1858,9 @@ handle_iteration_success() {
     local cost=$(echo "$result" | jq -s -r '.[-1].total_cost_usd // empty')
     if [ -n "$cost" ]; then
         echo "" >&2
-        printf "💰 $iteration_display Cost: \$%.3f\n" "$cost" >&2
+        printf "💰 $iteration_display Iteration cost: \$%.3f\n" "$cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $cost}")
+        printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
     echo "✅ $iteration_display Work completed" >&2
