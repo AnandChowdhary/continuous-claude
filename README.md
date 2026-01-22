@@ -56,6 +56,21 @@ Large refactoring tasks become manageable: breaking a monolith into modules, mod
 
 The model mirrors human development practices. Claude Code handles the grunt work, but humans remain in the loop through familiar mechanisms like PR reviews. Download the CLI from GitHub to get started!
 
+## The Ralph Wiggum method
+
+This approach embodies what some developers jokingly call the "Ralph Wiggum method" - named after the lovably naive character from The Simpsons who often stumbles into correct answers through innocent persistence rather than deep understanding. In software development, this refers to:
+
+- **Persistent iteration over perfect planning**: Keep trying different approaches until something works, rather than analyzing everything upfront
+- **Learning through doing**: Discover solutions by attempting them, failing, and trying again
+- **Naive optimism**: Don't overthink the complexity - just start making progress
+- **Stumbling into success**: Sometimes the best path forward emerges from repeated attempts rather than careful strategizing
+
+Continuous Claude mirrors this philosophy perfectly. Instead of requiring developers to architect a complete solution upfront, it simply runs in a loop - each iteration making progress, learning from failures, and trying again. When CI breaks, it doesn't give up or require human intervention to debug deeply; it just closes the PR and tries a different approach in the next iteration. The system doesn't need to understand the entire codebase or have a perfect plan; it just needs to keep making small improvements.
+
+Like Ralph Wiggum cheerfully declaring "I'm helping!" while accidentally solving problems, Continuous Claude keeps contributing incremental changes. Some iterations fail, some succeed, but the general direction trends toward completion. This wasteful-but-effective approach becomes increasingly viable as compute costs approach zero - it's okay to throw away failed attempts because the next one might work.
+
+The parallel extends to the markdown notes file: just as Ralph often repeats what he's heard without fully processing it, the system passes forward just enough context to make progress without getting bogged down in exhaustive analysis. The genius is in the simplicity - sometimes the best way to solve a complex problem is to just keep trying until you get it right.
+
 </details>
 
 ## ⚙️ How it works
