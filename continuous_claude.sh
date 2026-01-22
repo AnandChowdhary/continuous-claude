@@ -1670,7 +1670,8 @@ run_ci_fix_iteration() {
 1. Start by running \`gh run list --status failure --limit 3\` to see recent failures
 2. Then use \`gh run view <RUN_ID> --log-failed\` to see the error details
 3. Analyze what went wrong and fix it
-4. After making changes, stage and commit them with a clear commit message describing the fix"
+4. After making changes, stage, commit, AND PUSH them with a clear commit message describing the fix
+5. You MUST push the changes to trigger a new CI run"
 
     # Run Claude with the CI fix prompt
     local result
@@ -1697,43 +1698,9 @@ run_ci_fix_iteration() {
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
-    # Check if there are any changes to commit/push
-    local has_changes=false
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-        has_changes=true
-    fi
-    if [ -n "$(git ls-files --others --exclude-standard)" ]; then
-        has_changes=true
-    fi
-
-    if [ "$has_changes" = "false" ]; then
-        echo "⚠️  $iteration_display CI fix made no changes" >&2
-        return 1
-    fi
-
-    # Check if changes are already committed
-    local uncommitted_changes=false
-    if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
-        uncommitted_changes=true
-    fi
-
-    if [ "$uncommitted_changes" = "true" ]; then
-        # Commit the fix using the same commit prompt pattern
-        echo "💬 $iteration_display Committing CI fix..." >&2
-        if ! claude -p "$PROMPT_COMMIT_MESSAGE" --allowedTools "Bash(git)" --dangerously-skip-permissions >/dev/null 2>&1; then
-            echo "⚠️  $iteration_display Failed to commit CI fix" >&2
-            return 1
-        fi
-    fi
-
-    # Push the fix to update the PR
-    echo "📤 $iteration_display Pushing CI fix to branch..." >&2
-    if ! git push origin "$branch_name" >/dev/null 2>&1; then
-        echo "⚠️  $iteration_display Failed to push CI fix" >&2
-        return 1
-    fi
-
-    echo "✅ $iteration_display CI fix pushed, waiting for new checks..." >&2
+    # Claude was instructed to commit and push the fix
+    # The caller will check CI status to determine if the fix worked
+    echo "✅ $iteration_display CI fix iteration completed, checking CI status..." >&2
     return 0
 }
 
