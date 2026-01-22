@@ -1219,7 +1219,8 @@ continuous_claude_commit() {
     fi
 
     # Verify all changes (including untracked files) were committed
-    if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    # Note: --ignore-submodules=dirty allows continuing when submodules have uncommitted content
+    if ! git diff --quiet --ignore-submodules=dirty || ! git diff --cached --quiet --ignore-submodules=dirty || [ -n "$(git ls-files --others --exclude-standard)" ]; then
         echo "⚠️  $iteration_display Commit command ran but changes still present (uncommitted or untracked files remain)" >&2
         git checkout "$main_branch" >/dev/null 2>&1
         return 1
@@ -1344,7 +1345,8 @@ commit_on_current_branch() {
     fi
 
     # Verify all changes were committed
-    if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    # Note: --ignore-submodules=dirty allows continuing when submodules have uncommitted content
+    if ! git diff --quiet --ignore-submodules=dirty || ! git diff --cached --quiet --ignore-submodules=dirty || [ -n "$(git ls-files --others --exclude-standard)" ]; then
         echo "⚠️  $iteration_display Commit command ran but changes still present" >&2
         return 1
     fi

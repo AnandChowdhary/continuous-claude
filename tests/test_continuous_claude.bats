@@ -1710,3 +1710,126 @@ setup() {
 
     assert_failure
 }
+
+@test "continuous_claude_commit succeeds with dirty submodule" {
+    source "$SCRIPT_PATH"
+    
+    ENABLE_COMMITS="true"
+    DRY_RUN="false"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    
+    # Mock git to simulate a repository with a dirty submodule:
+    # - has_changes checks will fail (indicating changes exist)
+    # - diff checks after commit will pass with --ignore-submodules=dirty
+    # - ls-files returns no untracked files
+    function git() {
+        case "$1 $2 $3 $4 $5" in
+            "rev-parse --git-dir"*)
+                return 0
+                ;;
+            "rev-parse --abbrev-ref"*)
+                echo "test-branch"
+                ;;
+            "diff --quiet"*)
+                # Return failure (changes exist) if no --ignore-submodules flag
+                # Return success (no changes) if --ignore-submodules=dirty is present
+                if [[ "$*" == *"--ignore-submodules=dirty"* ]]; then
+                    return 0  # No changes when ignoring dirty submodules
+                else
+                    return 1  # Changes exist (for initial has_changes check)
+                fi
+                ;;
+            "diff --cached --quiet"*)
+                # Same logic as above
+                if [[ "$*" == *"--ignore-submodules=dirty"* ]]; then
+                    return 0  # No changes when ignoring dirty submodules
+                else
+                    return 1  # Changes exist (for initial has_changes check)
+                fi
+                ;;
+            "ls-files --others"*)
+                echo ""  # No untracked files in parent repo
+                ;;
+            "log -1 --format=%B"*)
+                echo "Test commit message"
+                ;;
+            "log -1 --format=%s"*)
+                echo "Test commit"
+                ;;
+            checkout*|branch*)
+                return 0
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+    
+    # Mock claude to succeed
+    function claude() {
+        return 0
+    }
+    export -f claude
+    
+    # Run the function - it may fail on PR creation but commit verification should pass
+    run continuous_claude_commit "(1/1)" "test-branch" "main"
+    
+    # Verify that commit verification passed (indicated by "Changes committed" message)
+    # The function may fail later on PR creation, but that's okay - we're testing
+    # that the commit verification with dirty submodules passes
+    assert_output --partial "Changes committed on branch: test-branch"
+}
+
+
+@test "commit_on_current_branch succeeds with dirty submodule" {
+    source "$SCRIPT_PATH"
+    
+    DRY_RUN="false"
+    
+    # Mock git to simulate a repository with a dirty submodule
+    function git() {
+        case "$1 $2 $3 $4 $5" in
+            "rev-parse --git-dir"*)
+                return 0
+                ;;
+            "diff --quiet"*)
+                # Return failure (changes exist) if no --ignore-submodules flag
+                # Return success (no changes) if --ignore-submodules=dirty is present
+                if [[ "$*" == *"--ignore-submodules=dirty"* ]]; then
+                    return 0  # No changes when ignoring dirty submodules
+                else
+                    return 1  # Changes exist (for initial has_changes check)
+                fi
+                ;;
+            "diff --cached --quiet"*)
+                # Same logic as above
+                if [[ "$*" == *"--ignore-submodules=dirty"* ]]; then
+                    return 0  # No changes when ignoring dirty submodules
+                else
+                    return 1  # Changes exist (for initial has_changes check)
+                fi
+                ;;
+            "ls-files --others"*)
+                echo ""  # No untracked files in parent repo
+                ;;
+            "log -1 --format=%s"*)
+                echo "Test commit"
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+    
+    # Mock claude to succeed
+    function claude() {
+        return 0
+    }
+    export -f claude
+    
+    # Run the function
+    run commit_on_current_branch "(1/1)"
+    
+    # Should succeed because --ignore-submodules=dirty allows dirty submodules
+    assert_success
+    assert_output --partial "Committed: Test commit"
+}
