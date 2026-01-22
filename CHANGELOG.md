@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.18.2] - 2026-01-22
+
+### What's Changed
+
+- :bug: Add explicit no-commit instructions to workflow and reviewer prompts (#49) (2bb14e4)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.18.1...v0.18.2
+
+
 ## [v0.18.1] - 2026-01-12
 
 ### What's Changed
