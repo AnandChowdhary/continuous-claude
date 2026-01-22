@@ -1719,10 +1719,11 @@ setup() {
     GITHUB_OWNER="user"
     GITHUB_REPO="repo"
     
-    # Mock git to simulate a repository with a dirty submodule:
-    # - has_changes checks will fail (indicating changes exist)
-    # - diff checks after commit will pass with --ignore-submodules=dirty
-    # - ls-files returns no untracked files
+    # Mock git to simulate a repository with changes in parent repo AND a dirty submodule:
+    # - has_changes will detect untracked files in parent repo
+    # - After claude commits, verification will pass (ignoring dirty submodule)
+    # - ls-files initially returns untracked files, then returns empty after commit
+    local commit_called=false
     function git() {
         case "$1 $2 $3 $4 $5" in
             "rev-parse --git-dir"*)
@@ -1732,24 +1733,18 @@ setup() {
                 echo "test-branch"
                 ;;
             "diff --quiet"*)
-                # Return failure (changes exist) if no --ignore-submodules flag
-                # Return success (no changes) if --ignore-submodules=dirty is present
-                if [[ "$*" == *"--ignore-submodules=dirty"* ]]; then
-                    return 0  # No changes when ignoring dirty submodules
-                else
-                    return 1  # Changes exist (for initial has_changes check)
-                fi
+                return 0  # No modified files
                 ;;
             "diff --cached --quiet"*)
-                # Same logic as above
-                if [[ "$*" == *"--ignore-submodules=dirty"* ]]; then
-                    return 0  # No changes when ignoring dirty submodules
-                else
-                    return 1  # Changes exist (for initial has_changes check)
-                fi
+                return 0  # No staged files
                 ;;
             "ls-files --others"*)
-                echo ""  # No untracked files in parent repo
+                # Return untracked files before commit, empty after
+                if [ "$commit_called" = "false" ]; then
+                    echo "newfile.txt"  # Simulates untracked file in parent repo
+                else
+                    echo ""  # No untracked files after commit
+                fi
                 ;;
             "log -1 --format=%B"*)
                 echo "Test commit message"
@@ -1765,11 +1760,15 @@ setup() {
     }
     export -f git
     
-    # Mock claude to succeed
+    commit_called=false
+    
+    # Mock claude to succeed and mark that commit was called
     function claude() {
+        commit_called=true
         return 0
     }
     export -f claude
+    export commit_called
     
     # Run the function - it may fail on PR creation but commit verification should pass
     run continuous_claude_commit "(1/1)" "test-branch" "main"
@@ -1786,31 +1785,26 @@ setup() {
     
     DRY_RUN="false"
     
-    # Mock git to simulate a repository with a dirty submodule
+    # Mock git to simulate a repository with changes in parent repo AND a dirty submodule
+    local commit_called=false
     function git() {
         case "$1 $2 $3 $4 $5" in
             "rev-parse --git-dir"*)
                 return 0
                 ;;
             "diff --quiet"*)
-                # Return failure (changes exist) if no --ignore-submodules flag
-                # Return success (no changes) if --ignore-submodules=dirty is present
-                if [[ "$*" == *"--ignore-submodules=dirty"* ]]; then
-                    return 0  # No changes when ignoring dirty submodules
-                else
-                    return 1  # Changes exist (for initial has_changes check)
-                fi
+                return 0  # No modified files
                 ;;
             "diff --cached --quiet"*)
-                # Same logic as above
-                if [[ "$*" == *"--ignore-submodules=dirty"* ]]; then
-                    return 0  # No changes when ignoring dirty submodules
-                else
-                    return 1  # Changes exist (for initial has_changes check)
-                fi
+                return 0  # No staged files
                 ;;
             "ls-files --others"*)
-                echo ""  # No untracked files in parent repo
+                # Return untracked files before commit, empty after
+                if [ "$commit_called" = "false" ]; then
+                    echo "newfile.txt"  # Simulates untracked file in parent repo
+                else
+                    echo ""  # No untracked files after commit
+                fi
                 ;;
             "log -1 --format=%s"*)
                 echo "Test commit"
@@ -1820,11 +1814,15 @@ setup() {
     }
     export -f git
     
-    # Mock claude to succeed
+    commit_called=false
+    
+    # Mock claude to succeed and mark that commit was called
     function claude() {
+        commit_called=true
         return 0
     }
     export -f claude
+    export commit_called
     
     # Run the function
     run commit_on_current_branch "(1/1)"

@@ -1182,8 +1182,9 @@ continuous_claude_commit() {
     fi
 
     # Check for any changes: modified tracked files, staged changes, or new untracked files
+    # Note: --ignore-submodules=dirty to not treat dirty submodules as changes
     local has_changes=false
-    if ! git diff --quiet || ! git diff --cached --quiet; then
+    if ! git diff --quiet --ignore-submodules=dirty || ! git diff --cached --quiet --ignore-submodules=dirty; then
         has_changes=true
     fi
     
@@ -1317,8 +1318,9 @@ commit_on_current_branch() {
     fi
 
     # Check for any changes: modified tracked files, staged changes, or new untracked files
+    # Note: --ignore-submodules=dirty to not treat dirty submodules as changes
     local has_changes=false
-    if ! git diff --quiet || ! git diff --cached --quiet; then
+    if ! git diff --quiet --ignore-submodules=dirty || ! git diff --cached --quiet --ignore-submodules=dirty; then
         has_changes=true
     fi
 
