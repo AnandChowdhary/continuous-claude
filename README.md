@@ -58,7 +58,7 @@ The model mirrors human development practices. Claude Code handles the grunt wor
 
 ## The Ralph Wiggum method
 
-The **Ralph Wiggum method** (also called the Ralph Wiggum technique or Ralph loop) is a recent **iterative AI agent workflow** technique that keeps an AI model working on a task in a loop until it truly completes it, rather than stopping after just one attempt. It's named after Ralph Wiggum from The Simpsons - a character known for his persistent, never-give-up attitude. The method feeds the same prompt repeatedly in a controlled loop, with the agent refining its output each time until it meets specified success criteria.
+The **Ralph Wiggum method** (also called the Ralph Wiggum technique or Ralph loop) is a recent **iterative AI agent workflow** technique that keeps an AI model working on a task in a loop until it truly completes it. Rather than stopping after just one attempt, it continues iterating until success. It's named after Ralph Wiggum from The Simpsons - a character known for his persistent, never-give-up attitude. The method feeds the same prompt repeatedly in a controlled loop, with the agent refining its output each time until it meets specified success criteria.
 
 ### How it works
 
@@ -70,7 +70,7 @@ while not done:
     check result
 ```
 
-The technique typically uses a **stop hook** - a mechanism that intercepts the agent's attempt to finish - and only allows termination if a defined completion marker (e.g., "DONE" or a specific output phrase) is found. Otherwise, it reinjects the prompt so the agent continues iterating. This approach trades one-shot perfection for iterative convergence - each round builds on the last by reading the modified content and naturally improving through a "fail forward" pattern.
+The technique typically uses a **stop hook** - a mechanism that intercepts the agent's attempt to finish. The stop hook only allows termination if a defined completion marker (e.g., "DONE" or a specific output phrase) is found. Otherwise, it reinjects the prompt so the agent continues iterating. This approach trades one-shot perfection for iterative convergence. Each round builds on the last by reading the modified content and naturally improving through a "fail forward" pattern.
 
 ### Parallels with Continuous Claude
 
