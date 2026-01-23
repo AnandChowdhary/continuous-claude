@@ -1546,7 +1546,7 @@ run_claude_iteration() {
                 # Helper to safely get detail string with fallback
                 def get_detail:
                     if .name == "Bash" then
-                        ((.input.command // "" | gsub($pwd + "/"; "") | split("\n")[0] | if length > 80 then .[0:80] + "..." else . end) // "")
+                        ((.input.command // "" | gsub($pwd + "/"; "") | split("\n")[0] | if length > 1000 then .[0:1000] + "..." else . end) // "")
                     elif .name == "Read" then
                         (((.input.file_path // "") | relpath) + (if .input.offset then " (line " + (.input.offset | tostring) + ")" else "" end)) // ""
                     elif .name == "Write" or .name == "Edit" or .name == "MultiEdit" then
@@ -1556,7 +1556,7 @@ run_claude_iteration() {
                     elif .name == "Grep" then
                         (("\"" + (.input.pattern // "") + "\"" + (if .input.path then " in " + (.input.path | relpath) else "" end) + (if .input.glob then " (" + .input.glob + ")" else "" end))) // ""
                     elif .name == "WebFetch" or (.name | startswith("WebFetch")) then
-                        (((.input.url // "") + " → " + ((.input.prompt // "") | if length > 40 then .[0:40] + "..." else . end))) // ""
+                        (((.input.url // "") + " → " + ((.input.prompt // "") | if length > 1000 then .[0:1000] + "..." else . end))) // ""
                     elif .name == "WebSearch" or (.name | startswith("WebSearch")) then
                         (("\"" + (.input.query // "") + "\"" + (if .input.allowed_domains then " (domains: " + (.input.allowed_domains | join(", ")) + ")" else "" end))) // ""
                     elif .name == "Task" then
@@ -1564,14 +1564,14 @@ run_claude_iteration() {
                     elif .name == "NotebookEdit" then
                         ((((.input.notebook_path // "") | relpath) + " [" + (.input.edit_mode // "replace") + "]")) // ""
                     elif .name == "AskUserQuestion" then
-                        ((.input.questions[0].question // "" | if length > 60 then .[0:60] + "..." else . end)) // ""
+                        ((.input.questions[0].question // "" | if length > 1000 then .[0:1000] + "..." else . end)) // ""
                     elif .name == "Skill" or .name == "SlashCommand" then
                         (("/" + (.input.skill // .input.command // "") + (if .input.args then " " + .input.args else "" end))) // ""
                     elif (.name | test("TodoWrite"; "i")) then
                         ((if .input.todos then
                             (.input.todos | map(select(.status == "in_progress") | .content // .activeForm) | first //
                              (.input.todos | first | .content // .activeForm // "")) |
-                            if length > 60 then .[0:60] + "..." else . end
+                            if length > 1000 then .[0:1000] + "..." else . end
                         else "" end)) // ""
                     elif (.name | test("TaskCreate"; "i")) then
                         (.input.subject // .input.description // "")
