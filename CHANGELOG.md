@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.20.1] - 2026-01-23
+
+### What's Changed
+
+- :recycle: Improve tool output formatting (f9801bf)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.20.0...v0.20.1
+
+
 ## [v0.20.0] - 2026-01-23
 
 ### What's Changed
