@@ -58,40 +58,9 @@ The model mirrors human development practices. Claude Code handles the grunt wor
 
 ## The Ralph Wiggum method
 
-The **Ralph Wiggum method** (also called the Ralph Wiggum technique or Ralph loop) is a recent **iterative AI agent workflow** technique that keeps an AI model working on a task in a loop until it truly completes it. Rather than stopping after just one attempt, it continues iterating until success. It's named after Ralph Wiggum from The Simpsons - a character known for his persistent, never-give-up attitude. The method feeds the same prompt repeatedly in a controlled loop, with the agent refining its output each time until it meets specified success criteria.
+The **Ralph Wiggum method** (also called the Ralph Wiggum technique or Ralph loop) is an iterative AI agent workflow that keeps an AI working on a task in a loop until completion. Named after the persistent Simpsons character, it uses a "stop hook" to prevent early termination - only allowing the agent to finish when a completion marker is found. Otherwise, it reinjects the prompt to continue iterating.
 
-### How it works
-
-At its core, the Ralph Wiggum method is conceptually simple:
-
-```bash
-while not done:
-    run agent on prompt
-    check result
-```
-
-The technique typically uses a **stop hook** - a mechanism that intercepts the agent's attempt to finish. The stop hook only allows termination if a defined completion marker (e.g., "DONE" or a specific output phrase) is found. Otherwise, it reinjects the prompt so the agent continues iterating. This approach trades one-shot perfection for iterative convergence. Each round builds on the last by reading the modified content and naturally improving through a "fail forward" pattern.
-
-### Parallels with Continuous Claude
-
-Continuous Claude embodies the Ralph Wiggum method philosophy at its core, but takes it further by integrating it into a complete development workflow:
-
-**Shared principles:**
-- **Persistent loops over one-shot attempts**: Both keep the agent working until the task is genuinely complete
-- **Iteration beats perfection**: Rather than requiring perfect planning upfront, both systems make incremental progress through repeated attempts
-- **Built-in feedback loops**: Each iteration refines based on the previous attempt's results
-- **Autonomy through repetition**: The agent works without constant human oversight
-
-**Where Continuous Claude extends the concept:**
-- **Git-based persistence**: Instead of just looping within a single session, each iteration creates a branch, PR, and commit - preserving work even when attempts fail
-- **CI/CD integration**: Failed iterations aren't just retried blindly; they learn from CI check failures and code reviews
-- **Multi-agent coordination**: The `SHARED_TASK_NOTES.md` file acts as persistent memory across iterations, similar to how the Ralph Wiggum method uses output markers, but with richer context
-- **Graceful failure handling**: When CI breaks, Continuous Claude closes the PR and tries a different approach in the next iteration, embodying the "fail forward" philosophy at the repository level
-- **Cost and time boundaries**: While pure Ralph Wiggum loops can run indefinitely, Continuous Claude adds practical constraints like `--max-cost`, `--max-duration`, and `--completion-threshold`
-
-Like Ralph Wiggum cheerfully declaring "I'm helping!" while persistent effort leads to success, Continuous Claude keeps contributing incremental changes. Some iterations fail, some succeed, but the general direction trends toward completion. This wasteful-but-effective approach becomes increasingly viable as compute costs approach zero - it's acceptable to discard failed PRs because the next attempt benefits from lessons learned.
-
-The genius is in the simplicity: instead of requiring developers to architect perfect solutions upfront, just keep the AI working in a loop with enough context to make steady progress. Whether it's the Ralph Wiggum method's stop hooks or Continuous Claude's markdown notes file, the pattern is the same - persistence through iteration until the job is genuinely done.
+Continuous Claude embodies this philosophy: persistent loops over one-shot attempts, iteration over perfection, and autonomous repetition. But it extends the concept with Git-based persistence (branches and PRs), CI/CD integration, and practical boundaries like `--max-cost` and `--max-duration`. Like Ralph Wiggum declaring "I'm helping!" while persistent effort leads to success, Continuous Claude keeps contributing incremental changes until the job is done.
 
 </details>
 
