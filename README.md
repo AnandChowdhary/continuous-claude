@@ -56,6 +56,12 @@ Large refactoring tasks become manageable: breaking a monolith into modules, mod
 
 The model mirrors human development practices. Claude Code handles the grunt work, but humans remain in the loop through familiar mechanisms like PR reviews. Download the CLI from GitHub to get started!
 
+## The Ralph Wiggum method
+
+The **Ralph Wiggum method** (also called the Ralph Wiggum technique or Ralph loop) is an iterative AI agent workflow that keeps an AI working on a task in a loop until completion. Named after the persistent Simpsons character, it uses a "stop hook" to prevent early termination - only allowing the agent to finish when a completion marker is found. Otherwise, it reinjects the prompt to continue iterating.
+
+Continuous Claude embodies this philosophy: persistent loops over one-shot attempts, iteration over perfection, and autonomous repetition. But it extends the concept with Git-based persistence (branches and PRs), CI/CD integration, and practical boundaries like `--max-cost` and `--max-duration`. Like Ralph Wiggum declaring "I'm helping!" while persistent effort leads to success, Continuous Claude keeps contributing incremental changes until the job is done.
+
 </details>
 
 ## ⚙️ How it works
