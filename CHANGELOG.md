@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.21.0] - 2026-01-27
+
+### What's Changed
+
+- :sparkles: Show release notes when prompting for updates (68dec87)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.20.3...v0.21.0
+
+
 ## [v0.20.3] - 2026-01-26
 
 ### What's Changed
