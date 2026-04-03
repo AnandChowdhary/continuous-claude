@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.22.0] - 2026-04-03
+
+### What's Changed
+
+- :sparkles: Add PR comment review before merge (9de6c59)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.21.0...v0.22.0
+
+
 ## [v0.21.0] - 2026-01-27
 
 ### What's Changed
