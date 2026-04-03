@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.22.1] - 2026-04-03
+
+### What's Changed
+
+- :bug: Make comment review best-effort and fix re-check counting (742c38e)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.22.0...v0.22.1
+
+
 ## [v0.22.0] - 2026-04-03
 
 ### What's Changed
