@@ -2135,6 +2135,47 @@ setup() {
     assert_output --partial "No comments found"
 }
 
+@test "check_pr_comments with since parameter filters old comments" {
+    source "$SCRIPT_PATH"
+
+    # Mock gh api to return zero when filtering by since
+    function gh() {
+        if [ "$1" = "api" ]; then
+            echo "0"
+            return 0
+        fi
+        return 1
+    }
+    export -f gh
+
+    run check_pr_comments "123" "owner" "repo" "[1/5]" "2026-04-03T12:00:00Z"
+    assert_failure
+    assert_output --partial "No comments found"
+}
+
+@test "check_pr_comments with since parameter detects new comments" {
+    source "$SCRIPT_PATH"
+
+    # Mock gh api to return comments when filtering by since
+    function gh() {
+        if [ "$1" = "api" ]; then
+            if echo "$2" | grep -q "pulls.*comments"; then
+                echo "1"
+                return 0
+            elif echo "$2" | grep -q "issues.*comments"; then
+                echo "0"
+                return 0
+            fi
+        fi
+        return 1
+    }
+    export -f gh
+
+    run check_pr_comments "123" "owner" "repo" "[1/5]" "2026-04-03T12:00:00Z"
+    assert_success
+    assert_output --partial "Found 1 comment(s)"
+}
+
 @test "show_help includes comment review flags" {
     source "$SCRIPT_PATH"
     export -f show_help

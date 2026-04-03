@@ -1185,14 +1185,20 @@ check_pr_comments() {
     local owner="$2"
     local repo="$3"
     local iteration_display="$4"
+    local since="$5"  # Optional ISO 8601 timestamp to only count comments after this time
 
-    # Check for inline review comments on the PR
-    local review_comments
-    review_comments=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" --jq 'length' 2>/dev/null || echo "0")
+    local review_comments issue_comments
 
-    # Check for PR-level (issue) comments, excluding the PR body itself
-    local issue_comments
-    issue_comments=$(gh api "repos/$owner/$repo/issues/$pr_number/comments" --jq 'length' 2>/dev/null || echo "0")
+    if [ -n "$since" ]; then
+        # Filter inline review comments by created_at > since
+        review_comments=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" --jq "[.[] | select(.created_at > \"$since\")] | length" 2>/dev/null || echo "0")
+        # Filter PR-level comments by created_at > since
+        issue_comments=$(gh api "repos/$owner/$repo/issues/$pr_number/comments?since=$since" --jq 'length' 2>/dev/null || echo "0")
+    else
+        # Count all comments
+        review_comments=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" --jq 'length' 2>/dev/null || echo "0")
+        issue_comments=$(gh api "repos/$owner/$repo/issues/$pr_number/comments" --jq 'length' 2>/dev/null || echo "0")
+    fi
 
     local total_comments=$((review_comments + issue_comments))
 
@@ -2096,34 +2102,27 @@ attempt_comment_fix_and_recheck() {
     while [ $retry_attempt -le $COMMENT_REVIEW_MAX_ATTEMPTS ]; do
         # Run comment fix iteration
         if ! run_comment_fix_iteration "$iteration_display" "$pr_number" "$owner" "$repo" "$branch_name" "$error_log" "$retry_attempt"; then
-            echo "⚠️  $iteration_display Comment review attempt $retry_attempt failed" >&2
-            retry_attempt=$((retry_attempt + 1))
-            continue
+            echo "⚠️  $iteration_display Comment review attempt $retry_attempt failed, proceeding to merge" >&2
+            return 0
         fi
 
         # Wait a bit for GitHub to register the new push
         sleep 5
 
-        # Wait for new CI checks
+        # Wait for new CI checks after comment fixes
         echo "🔍 $iteration_display Waiting for CI checks after comment fixes..." >&2
-        if ! wait_for_pr_checks "$pr_number" "$owner" "$repo" "$iteration_display"; then
-            echo "⚠️  $iteration_display CI failed after comment review attempt $retry_attempt" >&2
-            retry_attempt=$((retry_attempt + 1))
-            continue
+        if wait_for_pr_checks "$pr_number" "$owner" "$repo" "$iteration_display"; then
+            echo "✅ $iteration_display CI still green after addressing comments!" >&2
+            return 0
         fi
 
-        # Re-check for new comments (review agents may have added more)
-        if check_pr_comments "$pr_number" "$owner" "$repo" "$iteration_display"; then
-            echo "⚠️  $iteration_display New comments found after fix attempt $retry_attempt" >&2
-            retry_attempt=$((retry_attempt + 1))
-            continue
-        fi
-
-        echo "✅ $iteration_display All comments addressed and CI passing!" >&2
-        return 0
+        # CI failed after comment fix — this is a real problem, try again
+        echo "⚠️  $iteration_display CI failed after comment review attempt $retry_attempt" >&2
+        retry_attempt=$((retry_attempt + 1))
     done
 
-    echo "❌ $iteration_display All comment review attempts exhausted" >&2
+    # All attempts had CI failures — report failure so CI retry can kick in or PR gets closed
+    echo "❌ $iteration_display CI broken after addressing comments" >&2
     return 1
 }
 
