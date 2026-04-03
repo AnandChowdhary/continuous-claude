@@ -2033,6 +2033,116 @@ setup() {
     assert_output "."
 }
 
+@test "parse_arguments sets default comment review enabled" {
+    source "$SCRIPT_PATH"
+
+    assert_equal "$COMMENT_REVIEW_ENABLED" "true"
+    assert_equal "$COMMENT_REVIEW_MAX_ATTEMPTS" "1"
+}
+
+@test "parse_arguments handles disable-comment-review flag" {
+    source "$SCRIPT_PATH"
+    COMMENT_REVIEW_ENABLED="true"
+    parse_arguments --disable-comment-review
+
+    assert_equal "$COMMENT_REVIEW_ENABLED" "false"
+}
+
+@test "parse_arguments handles comment-review-max flag" {
+    source "$SCRIPT_PATH"
+    COMMENT_REVIEW_MAX_ATTEMPTS="1"
+    parse_arguments --comment-review-max 3
+
+    assert_equal "$COMMENT_REVIEW_MAX_ATTEMPTS" "3"
+}
+
+@test "validate_arguments fails with invalid comment-review-max" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    COMMENT_REVIEW_MAX_ATTEMPTS="invalid"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --comment-review-max must be a positive integer"
+}
+
+@test "validate_arguments fails with zero comment-review-max" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    COMMENT_REVIEW_MAX_ATTEMPTS="0"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --comment-review-max must be a positive integer"
+}
+
+@test "validate_arguments passes with valid comment-review-max" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    COMMENT_REVIEW_MAX_ATTEMPTS="2"
+
+    run validate_arguments
+    assert_success
+}
+
+@test "check_pr_comments returns 0 when comments exist" {
+    source "$SCRIPT_PATH"
+
+    # Mock gh api to return comment counts
+    function gh() {
+        if [ "$1" = "api" ]; then
+            if echo "$2" | grep -q "pulls.*comments"; then
+                echo "2"
+                return 0
+            elif echo "$2" | grep -q "issues.*comments"; then
+                echo "1"
+                return 0
+            fi
+        fi
+        return 1
+    }
+    export -f gh
+
+    run check_pr_comments "123" "owner" "repo" "[1/5]"
+    assert_success
+    assert_output --partial "Found 3 comment(s)"
+}
+
+@test "check_pr_comments returns 1 when no comments" {
+    source "$SCRIPT_PATH"
+
+    # Mock gh api to return zero comments
+    function gh() {
+        if [ "$1" = "api" ]; then
+            echo "0"
+            return 0
+        fi
+        return 1
+    }
+    export -f gh
+
+    run check_pr_comments "123" "owner" "repo" "[1/5]"
+    assert_failure
+    assert_output --partial "No comments found"
+}
+
+@test "show_help includes comment review flags" {
+    source "$SCRIPT_PATH"
+    export -f show_help
+    run show_help
+    assert_output --partial "--disable-comment-review"
+    assert_output --partial "--comment-review-max"
+}
+
 @test "relpath function handles path outside PWD" {
     run bash -c "echo '\"/other/path/file.ts\"' | jq -r --arg pwd '/home/user/project' '
         def relpath: if startswith(\$pwd + \"/\") then .[\$pwd | length + 1:] elif . == \$pwd then \".\" else . end;

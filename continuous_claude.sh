@@ -67,6 +67,22 @@ You are analyzing and fixing a CI/CD failure for a pull request.
 - Make minimal changes necessary to pass CI
 - If the failure seems unfixable (e.g., flaky test, infrastructure issue), explain why in your response"
 
+PROMPT_COMMENT_REVIEW_CONTEXT="## PR COMMENT REVIEW CONTEXT
+
+You are addressing review comments on a pull request.
+
+**Your task:**
+1. Use \`gh api repos/{owner}/{repo}/pulls/{pr}/comments\` to read inline code review comments
+2. Use \`gh api repos/{owner}/{repo}/issues/{pr}/comments\` to read PR-level comments
+3. Analyze each comment and determine if it requires code changes
+4. Make the necessary code changes to address the feedback
+5. Stage, commit, AND PUSH your changes with a clear commit message describing what comments you addressed
+
+**Important:**
+- Focus only on addressing the review comments, not adding new features
+- Make minimal changes necessary to address the feedback
+- If a comment is just informational or a question, no code changes are needed for it"
+
 PROMPT=""
 MAX_RUNS=""
 MAX_COST=""
@@ -96,6 +112,8 @@ REVIEW_PROMPT=""
 start_time=""
 CI_RETRY_ENABLED=true
 CI_RETRY_MAX_ATTEMPTS=1
+COMMENT_REVIEW_ENABLED=true
+COMMENT_REVIEW_MAX_ATTEMPTS=1
 
 parse_duration() {
     # Parse a duration string like "2h", "30m", "1h30m", "90s" to seconds
@@ -212,6 +230,8 @@ OPTIONAL FLAGS:
                                   (e.g., run build/lint/tests and fix any issues)
     --disable-ci-retry            Disable automatic CI failure retry (enabled by default)
     --ci-retry-max <number>       Maximum CI fix attempts per PR (default: 1)
+    --disable-comment-review      Disable automatic PR comment review (enabled by default)
+    --comment-review-max <number> Maximum comment review attempts per PR (default: 1)
 
 COMMANDS:
     update                        Check for and install the latest version
@@ -800,6 +820,14 @@ parse_arguments() {
                 CI_RETRY_MAX_ATTEMPTS="$2"
                 shift 2
                 ;;
+            --disable-comment-review)
+                COMMENT_REVIEW_ENABLED=false
+                shift
+                ;;
+            --comment-review-max)
+                COMMENT_REVIEW_MAX_ATTEMPTS="$2"
+                shift 2
+                ;;
             *)
                 # Collect unknown flags to forward to claude
                 EXTRA_CLAUDE_FLAGS+=("$1")
@@ -882,6 +910,13 @@ validate_arguments() {
     if [ -n "$CI_RETRY_MAX_ATTEMPTS" ]; then
         if ! [[ "$CI_RETRY_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$CI_RETRY_MAX_ATTEMPTS" -lt 1 ]; then
             echo "❌ Error: --ci-retry-max must be a positive integer" >&2
+            exit 1
+        fi
+    fi
+
+    if [ -n "$COMMENT_REVIEW_MAX_ATTEMPTS" ]; then
+        if ! [[ "$COMMENT_REVIEW_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$COMMENT_REVIEW_MAX_ATTEMPTS" -lt 1 ]; then
+            echo "❌ Error: --comment-review-max must be a positive integer" >&2
             exit 1
         fi
     fi
@@ -1145,6 +1180,31 @@ wait_for_pr_checks() {
     return 1
 }
 
+check_pr_comments() {
+    local pr_number="$1"
+    local owner="$2"
+    local repo="$3"
+    local iteration_display="$4"
+
+    # Check for inline review comments on the PR
+    local review_comments
+    review_comments=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" --jq 'length' 2>/dev/null || echo "0")
+
+    # Check for PR-level (issue) comments, excluding the PR body itself
+    local issue_comments
+    issue_comments=$(gh api "repos/$owner/$repo/issues/$pr_number/comments" --jq 'length' 2>/dev/null || echo "0")
+
+    local total_comments=$((review_comments + issue_comments))
+
+    if [ "$total_comments" -gt 0 ]; then
+        echo "💬 $iteration_display Found $total_comments comment(s) on PR #$pr_number ($review_comments inline, $issue_comments general)" >&2
+        return 0
+    fi
+
+    echo "✅ $iteration_display No comments found on PR #$pr_number" >&2
+    return 1
+}
+
 get_failed_run_id() {
     local pr_number="$1"
     local owner="$2"
@@ -1391,6 +1451,21 @@ continuous_claude_commit() {
             git checkout "$main_branch" >/dev/null 2>&1
             git branch -D "$branch_name" >/dev/null 2>&1 || true
             return 1
+        fi
+    fi
+
+    # Check for PR comments that need addressing before merging
+    if [ "$COMMENT_REVIEW_ENABLED" = "true" ]; then
+        if check_pr_comments "$pr_number" "$GITHUB_OWNER" "$GITHUB_REPO" "$iteration_display"; then
+            echo "💬 $iteration_display PR has review comments, attempting to address them..." >&2
+            if ! attempt_comment_fix_and_recheck "$pr_number" "$GITHUB_OWNER" "$GITHUB_REPO" "$branch_name" "$iteration_display" "$main_branch" "$ERROR_LOG"; then
+                echo "⚠️  $iteration_display Failed to address PR comments, closing PR..." >&2
+                gh pr close "$pr_number" --repo "$GITHUB_OWNER/$GITHUB_REPO" --delete-branch >/dev/null 2>&1 || true
+                echo "🗑️  $iteration_display Cleaning up local branch: $branch_name" >&2
+                git checkout "$main_branch" >/dev/null 2>&1
+                git branch -D "$branch_name" >/dev/null 2>&1 || true
+                return 1
+            fi
         fi
     fi
 
@@ -1946,6 +2021,109 @@ attempt_ci_fix_and_recheck() {
     done
 
     echo "❌ $iteration_display All CI fix attempts exhausted" >&2
+    return 1
+}
+
+run_comment_fix_iteration() {
+    local iteration_display="$1"
+    local pr_number="$2"
+    local owner="$3"
+    local repo="$4"
+    local branch_name="$5"
+    local error_log="$6"
+    local retry_attempt="$7"
+
+    echo "💬 $iteration_display Attempting to address PR comments (attempt $retry_attempt/$COMMENT_REVIEW_MAX_ATTEMPTS)..." >&2
+
+    # Build the comment review prompt
+    local comment_review_prompt="${PROMPT_COMMENT_REVIEW_CONTEXT}
+
+## CURRENT CONTEXT
+
+- Repository: $owner/$repo
+- PR Number: #$pr_number
+- Branch: $branch_name
+
+## INSTRUCTIONS
+
+1. Start by reading inline review comments: \`gh api repos/$owner/$repo/pulls/$pr_number/comments\`
+2. Also read PR-level comments: \`gh api repos/$owner/$repo/issues/$pr_number/comments\`
+3. Analyze each comment and determine what code changes are needed
+4. Make the necessary changes to address the feedback
+5. After making changes, stage, commit, AND PUSH them with a clear commit message describing what comments you addressed
+6. You MUST push the changes to update the PR"
+
+    # Run Claude with the comment review prompt
+    local result
+    local claude_exit_code=0
+    result=$(run_claude_iteration "$comment_review_prompt" "$ADDITIONAL_FLAGS" "$error_log" "$iteration_display") || claude_exit_code=$?
+
+    if [ $claude_exit_code -ne 0 ]; then
+        echo "❌ $iteration_display Comment review attempt failed with exit code: $claude_exit_code" >&2
+        return 1
+    fi
+
+    # Parse and validate the result
+    local parse_result=$(parse_claude_result "$result")
+    if [ "$?" != "0" ]; then
+        echo "❌ $iteration_display Comment review returned error: $parse_result" >&2
+        return 1
+    fi
+
+    # Extract and accumulate cost from comment review (stream-json format)
+    local fix_cost=$(echo "$result" | jq -s -r '.[-1].total_cost_usd // empty')
+    if [ -n "$fix_cost" ]; then
+        printf "💰 $iteration_display Comment review cost: \$%.3f\n" "$fix_cost" >&2
+        total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $fix_cost}")
+        printf "   Running total: \$%.3f\n" "$total_cost" >&2
+    fi
+
+    echo "✅ $iteration_display Comment review iteration completed" >&2
+    return 0
+}
+
+attempt_comment_fix_and_recheck() {
+    local pr_number="$1"
+    local owner="$2"
+    local repo="$3"
+    local branch_name="$4"
+    local iteration_display="$5"
+    local main_branch="$6"
+    local error_log="$7"
+
+    local retry_attempt=1
+
+    while [ $retry_attempt -le $COMMENT_REVIEW_MAX_ATTEMPTS ]; do
+        # Run comment fix iteration
+        if ! run_comment_fix_iteration "$iteration_display" "$pr_number" "$owner" "$repo" "$branch_name" "$error_log" "$retry_attempt"; then
+            echo "⚠️  $iteration_display Comment review attempt $retry_attempt failed" >&2
+            retry_attempt=$((retry_attempt + 1))
+            continue
+        fi
+
+        # Wait a bit for GitHub to register the new push
+        sleep 5
+
+        # Wait for new CI checks
+        echo "🔍 $iteration_display Waiting for CI checks after comment fixes..." >&2
+        if ! wait_for_pr_checks "$pr_number" "$owner" "$repo" "$iteration_display"; then
+            echo "⚠️  $iteration_display CI failed after comment review attempt $retry_attempt" >&2
+            retry_attempt=$((retry_attempt + 1))
+            continue
+        fi
+
+        # Re-check for new comments (review agents may have added more)
+        if check_pr_comments "$pr_number" "$owner" "$repo" "$iteration_display"; then
+            echo "⚠️  $iteration_display New comments found after fix attempt $retry_attempt" >&2
+            retry_attempt=$((retry_attempt + 1))
+            continue
+        fi
+
+        echo "✅ $iteration_display All comments addressed and CI passing!" >&2
+        return 0
+    done
+
+    echo "❌ $iteration_display All comment review attempts exhausted" >&2
     return 1
 }
 
