@@ -1465,7 +1465,8 @@ setup() {
     
     function wait_for_pr_checks() { return 0; }
     function merge_pr_and_cleanup() { return 0; }
-    export -f wait_for_pr_checks merge_pr_and_cleanup
+    function sleep() { return 0; }
+    export -f wait_for_pr_checks merge_pr_and_cleanup sleep
     
     run continuous_claude_commit "(1/1)" "test-branch" "main"
     
