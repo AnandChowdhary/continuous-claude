@@ -1357,21 +1357,31 @@ continuous_claude_commit() {
         return 0
     fi
 
-    # Check for any changes: modified tracked files, staged changes, or new untracked files
+    # Check for uncommitted changes: modified tracked files, staged changes, or new untracked files
     # Note: --ignore-submodules=dirty to not treat dirty submodules as changes
-    local has_changes=false
+    local has_uncommitted_changes=false
     if ! git diff --quiet --ignore-submodules=dirty || ! git diff --cached --quiet --ignore-submodules=dirty; then
-        has_changes=true
+        has_uncommitted_changes=true
     fi
     
     # Also check for untracked files (excluding ignored files)
     if [ -z "$(git ls-files --others --exclude-standard)" ]; then
         : # no untracked files
     else
-        has_changes=true
+        has_uncommitted_changes=true
+    fi
+
+    # Claude Code is instructed not to commit, but if it does, the branch can be
+    # ahead of main while the worktree is clean. Treat those commits as changes
+    # so we still push the branch and create the PR instead of deleting it.
+    local commits_ahead
+    commits_ahead=$(git rev-list --count "$main_branch..$branch_name" 2>/dev/null || echo "0")
+    local has_committed_changes=false
+    if [ "${commits_ahead:-0}" -gt 0 ] 2>/dev/null; then
+        has_committed_changes=true
     fi
     
-    if [ "$has_changes" = "false" ]; then
+    if [ "$has_uncommitted_changes" = "false" ] && [ "$has_committed_changes" = "false" ]; then
         echo "🫙 $iteration_display No changes detected, cleaning up branch..." >&2
         git checkout "$main_branch" >/dev/null 2>&1
         git branch -D "$branch_name" >/dev/null 2>&1 || true
@@ -1387,23 +1397,27 @@ continuous_claude_commit() {
         return 0
     fi
     
-    echo "💬 $iteration_display Committing changes..." >&2
-    
-    if ! claude -p "$PROMPT_COMMIT_MESSAGE" --allowedTools "Bash(git)" --dangerously-skip-permissions >/dev/null 2>&1; then
-        echo "⚠️  $iteration_display Failed to commit changes" >&2
-        git checkout "$main_branch" >/dev/null 2>&1
-        return 1
-    fi
+    if [ "$has_uncommitted_changes" = "true" ]; then
+        echo "💬 $iteration_display Committing changes..." >&2
+        
+        if ! claude -p "$PROMPT_COMMIT_MESSAGE" --allowedTools "Bash(git)" --dangerously-skip-permissions >/dev/null 2>&1; then
+            echo "⚠️  $iteration_display Failed to commit changes" >&2
+            git checkout "$main_branch" >/dev/null 2>&1
+            return 1
+        fi
 
-    # Verify all changes (including untracked files) were committed
-    # Note: --ignore-submodules=dirty allows continuing when submodules have uncommitted content
-    if ! git diff --quiet --ignore-submodules=dirty || ! git diff --cached --quiet --ignore-submodules=dirty || [ -n "$(git ls-files --others --exclude-standard)" ]; then
-        echo "⚠️  $iteration_display Commit command ran but changes still present (uncommitted or untracked files remain)" >&2
-        git checkout "$main_branch" >/dev/null 2>&1
-        return 1
-    fi
+        # Verify all changes (including untracked files) were committed
+        # Note: --ignore-submodules=dirty allows continuing when submodules have uncommitted content
+        if ! git diff --quiet --ignore-submodules=dirty || ! git diff --cached --quiet --ignore-submodules=dirty || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "⚠️  $iteration_display Commit command ran but changes still present (uncommitted or untracked files remain)" >&2
+            git checkout "$main_branch" >/dev/null 2>&1
+            return 1
+        fi
 
-    echo "📦 $iteration_display Changes committed on branch: $branch_name" >&2
+        echo "📦 $iteration_display Changes committed on branch: $branch_name" >&2
+    else
+        echo "📦 $iteration_display Changes already committed on branch: $branch_name ($commits_ahead commit(s) ahead)" >&2
+    fi
 
     local commit_message=$(git log -1 --format="%B" "$branch_name")
     local commit_title=$(echo "$commit_message" | head -n 1)
