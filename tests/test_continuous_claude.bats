@@ -1409,6 +1409,71 @@ setup() {
     assert_output --partial "(DRY RUN) PR merged: <commit title would appear here>"
 }
 
+@test "continuous_claude_commit creates PR when branch already has committed changes" {
+    source "$SCRIPT_PATH"
+    
+    ENABLE_COMMITS="true"
+    DRY_RUN="false"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    
+    function git() {
+        case "$1 $2 $3 $4" in
+            "rev-parse --git-dir"*)
+                return 0
+                ;;
+            "diff --quiet --ignore-submodules=dirty"*)
+                return 0
+                ;;
+            "diff --cached --quiet --ignore-submodules=dirty"*)
+                return 0
+                ;;
+            "ls-files --others --exclude-standard"*)
+                echo ""
+                ;;
+            "rev-list --count main..test-branch"*)
+                echo "1"
+                ;;
+            "log -1 --format=%B"*)
+                echo "Test commit message"
+                ;;
+            "push -u origin test-branch"*)
+                return 0
+                ;;
+            checkout*|branch*)
+                return 0
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+    
+    function claude() {
+        echo "claude should not be called when changes are already committed" >&2
+        return 99
+    }
+    export -f claude
+    
+    function gh() {
+        if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+            echo "https://github.com/user/repo/pull/123"
+            return 0
+        fi
+        return 1
+    }
+    export -f gh
+    
+    function wait_for_pr_checks() { return 0; }
+    function merge_pr_and_cleanup() { return 0; }
+    export -f wait_for_pr_checks merge_pr_and_cleanup
+    
+    run continuous_claude_commit "(1/1)" "test-branch" "main"
+    
+    assert_success
+    assert_output --partial "Changes already committed on branch: test-branch (1 commit(s) ahead)"
+    refute_output --partial "claude should not be called"
+}
+
 @test "wait_for_pr_checks prints initial waiting message once" {
     source "$SCRIPT_PATH"
     
