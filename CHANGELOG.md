@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.22.2] - 2026-05-05
+
+### What's Changed
+
+- :bug: detect already committed iteration changes (#53) (173e639)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.22.1...v0.22.2
+
+
 ## [v0.22.1] - 2026-04-03
 
 ### What's Changed

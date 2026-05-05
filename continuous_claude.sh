@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="v0.22.1"
+VERSION="v0.22.2"
 
 ADDITIONAL_FLAGS="--dangerously-skip-permissions --output-format stream-json --verbose"
 
