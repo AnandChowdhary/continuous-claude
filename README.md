@@ -223,6 +223,9 @@ continuous-claude -p "add features" -m 5 --owner myuser --repo myproject
 
 # Check for and install updates
 continuous-claude update
+
+# An actual, production example from the author
+continuous-claude -p "We are building... You should pick one thing to work on from SPEC.md, just one, and read SHARED_TASK_NOTES.md for the current status. If it's bigger than a single focused task, break it into small subtasks and only do the first one. Before you start, jot the breakdown into SHARED_TASK_NOTES.md so the next developer knows what's done, what's in flight, and what's queued. Work the one small piece end-to-end (build, test, verify it actually runs), then update SHARED_TASK_NOTES.md with where you left off, what's next, and any decisions or gotchas worth handing over. This is a relay so don't try to land the whole feature yourself. Leave the baton somewhere obvious for the next dev to grab (no need to commit or push)." -r "Review the currently changed files on this branch before I ship. Look at the diff and read everything that changed. Run the test suite, typecheck, and lint and fix anything that fails. Invoke the /simplify skill on the changed files to dedupe, extract clean abstractions where patterns repeat, and tighten naming, but don't over-abstract. Then start the dev server, drive the app with the agent-browser CLI (or whatever browser-test tooling you like), screenshot surfaces you touched, click through the golden path and edge cases, and watch the dev server logs and browser console for warnings or errors. Report back with what changed, what you simplified, test results, and a screenshot-backed walkthrough and flag anything you couldn't verify, so just make sure it's working as expected and "good" code (no need to commit or push)." -m 10
 ```
 
 ### Running in parallel
