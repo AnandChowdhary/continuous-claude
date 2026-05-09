@@ -110,6 +110,7 @@ LIST_WORKTREES=false
 DRY_RUN=false
 COMPLETION_SIGNAL="CONTINUOUS_CLAUDE_PROJECT_COMPLETE"
 COMPLETION_THRESHOLD=3
+STALL_THRESHOLD=""
 ERROR_LOG=""
 error_count=0
 extra_iterations=0
@@ -240,6 +241,7 @@ OPTIONAL FLAGS:
     --dry-run                     Simulate execution without making changes
     --completion-signal <phrase>  Phrase that agents output when project is complete (default: "CONTINUOUS_CLAUDE_PROJECT_COMPLETE")
     --completion-threshold <num>  Number of consecutive signals to stop early (default: 3)
+    --stall-threshold <number>    Pause after N consecutive failures and write diagnostics to the notes file
     -r, --review-prompt [text]    Run a reviewer pass after each iteration to validate changes
                                   Uses a comprehensive default review prompt when text is omitted
                                   (e.g., run build/lint/tests and fix any issues)
@@ -941,6 +943,10 @@ parse_arguments() {
                 COMPLETION_THRESHOLD="$2"
                 shift 2
                 ;;
+            --stall-threshold)
+                STALL_THRESHOLD="$2"
+                shift 2
+                ;;
             --review-prompt=*)
                 REVIEW_PROMPT="${1#*=}"
                 if [ -z "$REVIEW_PROMPT" ]; then
@@ -1090,6 +1096,13 @@ validate_arguments() {
     if [ -n "$COMPLETION_THRESHOLD" ]; then
         if ! [[ "$COMPLETION_THRESHOLD" =~ ^[0-9]+$ ]] || [ "$COMPLETION_THRESHOLD" -lt 1 ]; then
             echo "❌ Error: --completion-threshold must be a positive integer" >&2
+            exit 1
+        fi
+    fi
+
+    if [ -n "$STALL_THRESHOLD" ]; then
+        if ! [[ "$STALL_THRESHOLD" =~ ^[0-9]+$ ]] || [ "$STALL_THRESHOLD" -lt 1 ]; then
+            echo "❌ Error: --stall-threshold must be a positive integer" >&2
             exit 1
         fi
     fi
@@ -2672,6 +2685,106 @@ extract_agent_usage_summary() {
     '
 }
 
+repo_has_pending_changes() {
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! git diff --quiet --ignore-submodules=dirty || ! git diff --cached --quiet --ignore-submodules=dirty; then
+        return 0
+    fi
+
+    if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+detect_positive_completion_heuristic() {
+    local result_text="$1"
+
+    if [ -z "$result_text" ]; then
+        return 1
+    fi
+
+    local normalized
+    normalized=$(printf "%s" "$result_text" | tr '[:upper:]' '[:lower:]')
+
+    case "$normalized" in
+        *"all scoped tasks complete"*|*"all requested tasks complete"*|*"all tasks complete"*|*"nothing left to do"*|*"no remaining work"*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+get_recent_failure_details() {
+    local fallback="${1:-}"
+
+    if [ -n "$ERROR_LOG" ] && [ -f "$ERROR_LOG" ] && [ -s "$ERROR_LOG" ]; then
+        tail -n 80 "$ERROR_LOG"
+    elif [ -n "$fallback" ]; then
+        printf "%s\n" "$fallback" | tail -n 80
+    else
+        echo "No diagnostics captured."
+    fi
+}
+
+append_stall_summary() {
+    local iteration_display="$1"
+    local reason="$2"
+    local details="${3:-}"
+
+    local notes_dir
+    notes_dir=$(dirname "$NOTES_FILE")
+    if [ "$notes_dir" != "." ]; then
+        mkdir -p "$notes_dir"
+    fi
+
+    {
+        echo ""
+        echo "## Health pause - $(date '+%Y-%m-%d %H:%M:%S %Z')"
+        echo ""
+        echo "- Iteration: $iteration_display"
+        echo "- Consecutive failures: $error_count"
+        echo "- Reason: $reason"
+        echo ""
+        echo "Recent diagnostics:"
+        get_recent_failure_details "$details" | sed 's/^/    /'
+        echo ""
+        echo "Next step: Inspect the failure, fix the project or adjust the prompt, then rerun Continuous Claude."
+    } >> "$NOTES_FILE"
+}
+
+maybe_handle_stall_threshold() {
+    local iteration_display="$1"
+    local reason="$2"
+    local details="${3:-}"
+
+    if [ -n "$STALL_THRESHOLD" ] && [ "$error_count" -ge "$STALL_THRESHOLD" ]; then
+        append_stall_summary "$iteration_display" "$reason" "$details"
+        echo "⏸️  $iteration_display Health stall threshold reached ($error_count/$STALL_THRESHOLD consecutive failures)" >&2
+        echo "📝 $iteration_display Wrote stall diagnostics to $NOTES_FILE" >&2
+
+        if [ -t 0 ]; then
+            echo "Press Enter after human intervention to continue, or Ctrl+C to exit." >&2
+            read -r _
+            error_count=0
+            return 0
+        fi
+
+        echo "❌ $iteration_display Non-interactive shell detected; exiting so a human can intervene." >&2
+        exit 1
+    fi
+
+    if [ -z "$STALL_THRESHOLD" ] && [ "$error_count" -ge 3 ]; then
+        echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
+        exit 1
+    fi
+}
+
 handle_iteration_error() {
     local iteration_display="$1"
     local error_type="$2"
@@ -2724,10 +2837,7 @@ handle_iteration_error() {
             ;;
     esac
     
-    if [ "$error_count" -ge 3 ]; then
-        echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
-        exit 1
-    fi
+    maybe_handle_stall_threshold "$iteration_display" "$error_type" "$error_output"
     
     return 1
 }
@@ -2740,18 +2850,9 @@ handle_iteration_success() {
     
     local result_text
     result_text=$(extract_agent_result_text "$result")
-
-    # Check for completion signal in the output
+    local explicit_completion_detected=false
     if [ -n "$result_text" ] && [[ "$result_text" == *"$COMPLETION_SIGNAL"* ]]; then
-        completion_signal_count=$((completion_signal_count + 1))
-        echo "" >&2
-        echo "🎯 $iteration_display Completion signal detected ($completion_signal_count/$COMPLETION_THRESHOLD)" >&2
-    else
-        if [ "$completion_signal_count" -gt 0 ]; then
-            echo "" >&2
-            echo "🔄 $iteration_display Completion signal not found, resetting counter" >&2
-        fi
-        completion_signal_count=0
+        explicit_completion_detected=true
     fi
 
     local cost
@@ -2777,10 +2878,7 @@ handle_iteration_success() {
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
                 echo "❌ $iteration_display Commit failed ($error_count consecutive errors)" >&2
-                if [ "$error_count" -ge 3 ]; then
-                    echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
-                    exit 1
-                fi
+                maybe_handle_stall_threshold "$iteration_display" "commit failed"
                 return 1
             fi
         else
@@ -2789,10 +2887,7 @@ handle_iteration_success() {
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
                 echo "❌ $iteration_display PR workflow failed ($error_count consecutive errors)" >&2
-                if [ "$error_count" -ge 3 ]; then
-                    echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
-                    exit 1
-                fi
+                maybe_handle_stall_threshold "$iteration_display" "PR workflow failed"
                 return 1
             fi
         fi
@@ -2803,6 +2898,22 @@ handle_iteration_success() {
             git checkout "$main_branch" >/dev/null 2>&1
             git branch -D "$branch_name" >/dev/null 2>&1 || true
         fi
+    fi
+
+    if [ "$explicit_completion_detected" = "true" ]; then
+        completion_signal_count=$((completion_signal_count + 1))
+        echo "" >&2
+        echo "🎯 $iteration_display Completion signal detected ($completion_signal_count/$COMPLETION_THRESHOLD)" >&2
+    elif detect_positive_completion_heuristic "$result_text" && ! repo_has_pending_changes; then
+        completion_signal_count=$((completion_signal_count + 1))
+        echo "" >&2
+        echo "🩺 $iteration_display Positive completion heuristic detected ($completion_signal_count/$COMPLETION_THRESHOLD)" >&2
+    else
+        if [ "$completion_signal_count" -gt 0 ]; then
+            echo "" >&2
+            echo "🔄 $iteration_display Completion signal not found, resetting counter" >&2
+        fi
+        completion_signal_count=0
     fi
     
     error_count=0
@@ -2910,10 +3021,7 @@ $notes_content
             # Count as an error for consecutive error tracking
             error_count=$((error_count + 1))
             extra_iterations=$((extra_iterations + 1))
-            if [ "$error_count" -ge 3 ]; then
-                echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
-                exit 1
-            fi
+            maybe_handle_stall_threshold "$iteration_display" "reviewer failed"
             return 1
         fi
     fi

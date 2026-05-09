@@ -3,7 +3,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$script:Version = "v0.24.0"
+$script:Version = "v0.24.3"
 $script:ClaudeFlags = @("--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose")
 $script:CodexFlags = @("--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check")
 
@@ -107,6 +107,7 @@ OPTIONAL FLAGS:
     --dry-run                       Simulate execution without making changes
     --completion-signal <phrase>    Phrase agents output when project is complete
     --completion-threshold <num>    Consecutive signals required to stop early (default: 3)
+    --stall-threshold <number>      Bash-runner only; pause after repeated failures and write diagnostics
     -r, --review-prompt [text]      Run a reviewer pass after each iteration; uses a default prompt when text is omitted
     --codex-input-cost-per-million <dollars>
                                     Input token rate for Codex --max-cost estimates
@@ -279,6 +280,9 @@ function Parse-Arguments {
                 $script:CompletionThreshold = [int](Need-Value $Items $i $arg)
                 $i += 2
                 continue
+            }
+            "^--stall-threshold$" {
+                Exit-UnsupportedFlag $arg
             }
             "^--review-prompt=.*$" {
                 $script:ReviewPrompt = $arg.Substring("--review-prompt=".Length)

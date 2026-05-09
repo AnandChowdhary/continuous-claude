@@ -191,6 +191,7 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 - `--dry-run`: Simulate execution without making changes
 - `--completion-signal <phrase>`: Phrase that agents output when entire project is complete (default: `CONTINUOUS_CLAUDE_PROJECT_COMPLETE`)
 - `--completion-threshold <num>`: Number of consecutive completion signals required to stop early (default: `3`)
+- `--stall-threshold <number>`: Pause after this many consecutive failures and append diagnostics to the notes file for human intervention
 - `-r, --review-prompt [text]`: Run a reviewer pass after each iteration to validate changes. If you omit the text, Continuous Claude uses a comprehensive default review prompt that reviews the diff, runs available checks, simplifies changed code, and verifies the app where relevant.
 - `--command-retry-max <number>`: Maximum attempts for transient commit/push/PR-create commands before starting a new iteration (default: `3`)
 - `--command-retry-base-delay <seconds>`: Initial retry delay in seconds for transient commands, doubled after each failed attempt (default: `5`)
@@ -265,6 +266,9 @@ continuous-claude -p "add unit tests to all files" -m 50 --completion-threshold 
 
 # Use custom completion signal
 continuous-claude -p "fix all bugs" -m 20 --completion-signal "ALL_BUGS_FIXED" --completion-threshold 2
+
+# Pause and write diagnostics to SHARED_TASK_NOTES.md after repeated failures
+continuous-claude -p "stabilize CI" -m 20 --stall-threshold 3
 
 # Use a reviewer to validate and fix changes after each iteration
 continuous-claude -p "add new feature" -m 5 -r "Run npm test and npm run lint, fix any failures"
