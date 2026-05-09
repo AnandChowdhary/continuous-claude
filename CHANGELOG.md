@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.24.2] - 2026-05-09
+
+### What's Changed
+
+- Surface PR merge errors accurately (#58) (e567f06)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.24.1...v0.24.2
+
+
 ## [v0.24.1] - 2026-05-09
 
 ### What's Changed
