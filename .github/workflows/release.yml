@@ -113,13 +113,13 @@ jobs:
             exit 0
           fi
 
-          # Check if continuous_claude.sh has changed since last tag
+          # Check if runnable/installable scripts changed since last tag
           if [ "$LATEST_TAG" != "v0.0.0" ]; then
-            if ! git diff --quiet ${LATEST_TAG}..HEAD -- continuous_claude.sh; then
-              echo "✅ continuous_claude.sh has changed since $LATEST_TAG"
+            if ! git diff --quiet ${LATEST_TAG}..HEAD -- continuous_claude.sh continuous_claude.ps1 install.sh install.ps1; then
+              echo "✅ installable scripts have changed since $LATEST_TAG"
               SCRIPT_CHANGED=true
             else
-              echo "⏭️  continuous_claude.sh unchanged since $LATEST_TAG"
+              echo "⏭️  installable scripts unchanged since $LATEST_TAG"
               SCRIPT_CHANGED=false
             fi
           else
@@ -145,9 +145,9 @@ jobs:
             fi
           done <<< "$COMMITS"
 
-          # Skip release if script unchanged OR all commits are test-only
+          # Skip release if installable scripts are unchanged OR all commits are test-only
           if [ "$SCRIPT_CHANGED" = "false" ]; then
-            echo "⏭️  Skipping release: continuous_claude.sh unchanged"
+            echo "⏭️  Skipping release: installable scripts unchanged"
             echo "should_release=false" >> $GITHUB_OUTPUT
           elif [ "$TEST_ONLY" = "true" ]; then
             echo "⏭️  Skipping release: only test/CI/docs changes"
@@ -162,10 +162,13 @@ jobs:
         run: |
           NEW_VERSION="${{ steps.version_bump.outputs.new_version }}"
 
-          # Update version in continuous_claude.sh (replace any existing version)
+          # Update versions in runnable scripts (replace any existing version)
           sed -i 's/^VERSION=".*"/VERSION="'"$NEW_VERSION"'"/' continuous_claude.sh
+          if [ -f continuous_claude.ps1 ]; then
+            sed -i 's/^\$script:Version = ".*"/\$script:Version = "'"$NEW_VERSION"'"/' continuous_claude.ps1
+          fi
 
-          echo "✅ Updated version to $NEW_VERSION in continuous_claude.sh"
+          echo "✅ Updated version to $NEW_VERSION"
 
       - name: Regenerate checksum
         if: steps.check_version.outputs.should_release == 'true'
@@ -173,8 +176,12 @@ jobs:
           # Generate sha256 checksum alongside the script
           sha256sum continuous_claude.sh > continuous_claude.sh.sha256
           cat continuous_claude.sh.sha256
+          if [ -f continuous_claude.ps1 ]; then
+            sha256sum continuous_claude.ps1 > continuous_claude.ps1.sha256
+            cat continuous_claude.ps1.sha256
+          fi
 
-          echo "✅ Regenerated continuous_claude.sh.sha256"
+          echo "✅ Regenerated checksums"
 
       - name: Generate release notes
         id: release_notes
@@ -206,12 +213,25 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${NEW_VERSION}/install.sh | bash
           \`\`\`
 
+          On Windows with PowerShell 7:
+
+          \`\`\`powershell
+          irm https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${NEW_VERSION}/install.ps1 | iex
+          \`\`\`
+
           Or download the script directly:
 
           \`\`\`bash
           curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${NEW_VERSION}/continuous_claude.sh -o continuous-claude
           chmod +x continuous-claude
           sudo mv continuous-claude /usr/local/bin/
+          \`\`\`
+
+          PowerShell runner:
+
+          \`\`\`powershell
+          Invoke-WebRequest https://raw.githubusercontent.com/${{ github.repository }}/refs/tags/${NEW_VERSION}/continuous_claude.ps1 -OutFile continuous-claude.ps1
+          pwsh ./continuous-claude.ps1 --help
           \`\`\`
           EOF
 
