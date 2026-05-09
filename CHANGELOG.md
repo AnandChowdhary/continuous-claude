@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.24.1] - 2026-05-09
+
+### What's Changed
+
+- Add native PowerShell runner for Windows (#57) (28eacb4)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.24.0...v0.24.1
+
+
 ## [v0.24.0] - 2026-05-09
 
 ### What's Changed
