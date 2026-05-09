@@ -57,6 +57,7 @@ require_pwsh() {
     assert_success
     assert_output --partial "Continuous Claude PowerShell"
     assert_output --partial "--review-prompt [text]"
+    assert_output --partial "--stall-threshold <number>"
 }
 
 @test "powershell dry run supports empty reviewer prompt" {
@@ -111,6 +112,12 @@ require_pwsh() {
 
     assert_failure
     assert_output --partial "--worktree is not supported by the native PowerShell runner yet"
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        -p "test" -m 1 --stall-threshold 2
+
+    assert_failure
+    assert_output --partial "--stall-threshold is not supported by the native PowerShell runner yet"
 }
 
 @test "parse_arguments handles required flags" {
@@ -577,11 +584,19 @@ require_pwsh() {
     assert_equal "$COMPLETION_THRESHOLD" "5"
 }
 
+@test "parse_arguments handles stall-threshold flag" {
+    source "$SCRIPT_PATH"
+    parse_arguments --stall-threshold 4
+
+    assert_equal "$STALL_THRESHOLD" "4"
+}
+
 @test "parse_arguments sets default completion values" {
     source "$SCRIPT_PATH"
     
     assert_equal "$COMPLETION_SIGNAL" "CONTINUOUS_CLAUDE_PROJECT_COMPLETE"
     assert_equal "$COMPLETION_THRESHOLD" "3"
+    assert_equal "$STALL_THRESHOLD" ""
 }
 
 @test "validate_arguments fails with invalid completion-threshold" {
@@ -608,6 +623,32 @@ require_pwsh() {
     run validate_arguments
     assert_failure
     assert_output --partial "Error: --completion-threshold must be a positive integer"
+}
+
+@test "validate_arguments fails with invalid stall-threshold" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    STALL_THRESHOLD="invalid"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --stall-threshold must be a positive integer"
+}
+
+@test "validate_arguments fails with zero stall-threshold" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    STALL_THRESHOLD="0"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --stall-threshold must be a positive integer"
 }
 
 @test "validate_arguments passes with valid completion-threshold" {
@@ -733,6 +774,77 @@ require_pwsh() {
     assert_success
     assert_output --partial "Completion signal detected (1/2)"
     assert_output --partial "Tokens: input 100, cached input 0, output 20"
+}
+
+@test "positive completion heuristic increments counter when repo is clean" {
+    source "$SCRIPT_PATH"
+
+    completion_signal_count=0
+    total_cost=0
+    COMPLETION_THRESHOLD=3
+    ENABLE_COMMITS="false"
+
+    local result='{"result": "All scoped tasks complete.", "total_cost_usd": 0.1}'
+
+    function git() {
+        case "$1 $2 $3" in
+            "rev-parse --git-dir")
+                return 0
+                ;;
+            "diff --quiet --ignore-submodules=dirty")
+                return 0
+                ;;
+            "diff --cached --quiet")
+                return 0
+                ;;
+            "ls-files --others --exclude-standard")
+                echo ""
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+
+    run handle_iteration_success "(1/3)" "$result" "" "main"
+
+    assert_success
+    assert_output --partial "Positive completion heuristic detected (1/3)"
+}
+
+@test "positive completion heuristic waits when repo has pending changes" {
+    source "$SCRIPT_PATH"
+
+    completion_signal_count=1
+    total_cost=0
+    COMPLETION_THRESHOLD=3
+    ENABLE_COMMITS="false"
+
+    local result='{"result": "All scoped tasks complete.", "total_cost_usd": 0.1}'
+
+    function git() {
+        case "$1 $2 $3" in
+            "rev-parse --git-dir")
+                return 0
+                ;;
+            "diff --quiet --ignore-submodules=dirty")
+                return 1
+                ;;
+            "diff --cached --quiet")
+                return 0
+                ;;
+            "ls-files --others --exclude-standard")
+                echo ""
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+
+    run handle_iteration_success "(1/3)" "$result" "" "main"
+
+    assert_success
+    assert_output --partial "Completion signal not found, resetting counter"
+    refute_output --partial "Positive completion heuristic detected"
 }
 
 @test "show_completion_summary shows signal message" {
@@ -991,6 +1103,28 @@ require_pwsh() {
     run grep -q "exec" "$args_file"
     assert_success
     run grep -q "commit please" "$args_file"
+    assert_success
+}
+
+@test "handle_iteration_error writes notes and exits at stall threshold" {
+    source "$SCRIPT_PATH"
+
+    STALL_THRESHOLD=2
+    error_count=1
+    extra_iterations=0
+    NOTES_FILE="$BATS_TEST_TMPDIR/health-notes.md"
+    ERROR_LOG="$BATS_TEST_TMPDIR/error.log"
+    echo "lint failed in src/app.js" > "$ERROR_LOG"
+
+    run handle_iteration_error "(2/5)" "exit_code" ""
+
+    assert_failure
+    assert_output --partial "Health stall threshold reached (2/2 consecutive failures)"
+    assert_output --partial "Wrote stall diagnostics to $NOTES_FILE"
+    assert [ -f "$NOTES_FILE" ]
+    run grep -q "Health pause" "$NOTES_FILE"
+    assert_success
+    run grep -q "lint failed in src/app.js" "$NOTES_FILE"
     assert_success
 }
 
@@ -2936,6 +3070,7 @@ require_pwsh() {
     assert_output --partial "--comment-review-max"
     assert_output --partial "--command-retry-max"
     assert_output --partial "--command-retry-base-delay"
+    assert_output --partial "--stall-threshold"
     assert_output --partial "--review-prompt [text]"
     assert_output --partial "Uses a comprehensive default review prompt"
 }

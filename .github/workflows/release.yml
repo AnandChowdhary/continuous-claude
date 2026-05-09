@@ -301,7 +301,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # Stage and commit changes
-          git add continuous_claude.sh continuous_claude.sh.sha256 CHANGELOG.md
+          git add continuous_claude.sh continuous_claude.sh.sha256 continuous_claude.ps1 continuous_claude.ps1.sha256 CHANGELOG.md
           git commit -m ":bookmark: Release version $NEW_VERSION"
 
           # Push to main
