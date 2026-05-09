@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## [v0.23.0] - 2026-05-09
+
+### What's Changed
+
+- :sparkles: Add Codex provider support (#55) (9f0127f)
+- :pencil: Add example for prod use case (138bab2)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.22.2...v0.23.0
+
+
 ## [v0.22.2] - 2026-05-05
 
 ### What's Changed
