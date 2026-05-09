@@ -1457,8 +1457,12 @@ merge_pr_and_cleanup() {
     esac
 
     echo "🔀 $iteration_display Merging PR #$pr_number with strategy: $MERGE_STRATEGY..." >&2
-    if ! gh pr merge "$pr_number" --repo "$owner/$repo" $merge_flag >/dev/null 2>&1; then
-        echo "⚠️  $iteration_display Failed to merge PR (may have conflicts or be blocked)" >&2
+    local merge_output
+    if ! merge_output=$(gh pr merge "$pr_number" --repo "$owner/$repo" $merge_flag 2>&1); then
+        echo "⚠️  $iteration_display Failed to merge PR: $merge_output" >&2
+        if echo "$merge_output" | grep -qi "upgrade to github pro\\|make this repository public\\|http 403\\|status code 403\\|resource not accessible"; then
+            echo "   GitHub reported an API or plan restriction. This is not a merge queue failure; check repository visibility, branch protection/ruleset availability, and your GitHub plan." >&2
+        fi
         return 1
     fi
 
@@ -2724,7 +2728,7 @@ handle_iteration_success() {
             if ! continuous_claude_commit "$iteration_display" "$branch_name" "$main_branch"; then
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
-                echo "❌ $iteration_display PR merge queue failed ($error_count consecutive errors)" >&2
+                echo "❌ $iteration_display PR workflow failed ($error_count consecutive errors)" >&2
                 if [ "$error_count" -ge 3 ]; then
                     echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
                     exit 1
