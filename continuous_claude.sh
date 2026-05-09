@@ -11,6 +11,7 @@ KNOWLEDGE_FILE=""
 AUTO_UPDATE=false
 DISABLE_UPDATES=false
 AGENT_PROVIDER="${CONTINUOUS_CLAUDE_PROVIDER:-claude}"
+REVIEW_PROVIDER=""
 CODEX_INPUT_COST_PER_MILLION="${CODEX_INPUT_COST_PER_MILLION:-}"
 CODEX_OUTPUT_COST_PER_MILLION="${CODEX_OUTPUT_COST_PER_MILLION:-}"
 CODEX_CACHED_INPUT_COST_PER_MILLION="${CODEX_CACHED_INPUT_COST_PER_MILLION:-}"
@@ -246,6 +247,7 @@ OPTIONAL FLAGS:
     -h, --help                    Show this help message
     -v, --version                 Show version information
     --provider <provider>         AI coding agent provider: claude or codex (default: claude)
+    --review-provider <provider>  Provider for reviewer pass: claude or codex (defaults to --provider)
     --owner <owner>               GitHub repository owner (auto-detected from git remote if not provided)
     --repo <repo>                 GitHub repository name (auto-detected from git remote if not provided)
     --disable-commits             Disable automatic commits and PR creation
@@ -294,6 +296,9 @@ EXAMPLES:
 
     # Run 5 iterations with Codex CLI instead of Claude Code
     continuous-claude --provider codex -p "Fix all linter errors" -m 5 --owner myuser --repo myproject
+
+    # Use Claude Code for implementation and Codex CLI for review
+    continuous-claude --provider claude --review-provider codex -p "Add tests" -m 5 -r
 
     # Run with cost limit
     continuous-claude -p "Add tests" --max-cost 10.00 --owner myuser --repo myproject
@@ -374,7 +379,8 @@ show_version() {
 }
 
 get_agent_display_name() {
-    case "$AGENT_PROVIDER" in
+    local provider="${1:-$AGENT_PROVIDER}"
+    case "$provider" in
         claude)
             echo "Claude Code"
             ;;
@@ -382,13 +388,14 @@ get_agent_display_name() {
             echo "Codex CLI"
             ;;
         *)
-            echo "$AGENT_PROVIDER"
+            echo "$provider"
             ;;
     esac
 }
 
 get_agent_command() {
-    case "$AGENT_PROVIDER" in
+    local provider="${1:-$AGENT_PROVIDER}"
+    case "$provider" in
         claude)
             echo "claude"
             ;;
@@ -396,13 +403,14 @@ get_agent_command() {
             echo "codex"
             ;;
         *)
-            echo "$AGENT_PROVIDER"
+            echo "$provider"
             ;;
     esac
 }
 
 get_agent_install_url() {
-    case "$AGENT_PROVIDER" in
+    local provider="${1:-$AGENT_PROVIDER}"
+    case "$provider" in
         claude)
             echo "https://claude.ai/code"
             ;;
@@ -416,7 +424,8 @@ get_agent_install_url() {
 }
 
 get_agent_default_flags() {
-    case "$AGENT_PROVIDER" in
+    local provider="${1:-$AGENT_PROVIDER}"
+    case "$provider" in
         claude)
             echo "$ADDITIONAL_FLAGS"
             ;;
@@ -889,6 +898,10 @@ parse_arguments() {
                 AGENT_PROVIDER="$2"
                 shift 2
                 ;;
+            --review-provider)
+                REVIEW_PROVIDER="$2"
+                shift 2
+                ;;
             --codex-input-cost-per-million)
                 CODEX_INPUT_COST_PER_MILLION="$2"
                 shift 2
@@ -1070,6 +1083,11 @@ validate_arguments() {
         exit 1
     fi
 
+    if [ -n "$REVIEW_PROVIDER" ] && [[ ! "$REVIEW_PROVIDER" =~ ^(claude|codex)$ ]]; then
+        echo "❌ Error: --review-provider must be one of: claude, codex" >&2
+        exit 1
+    fi
+
     if [ -z "$PROMPT" ]; then
         echo "❌ Error: Prompt is required. Use -p to provide a prompt." >&2
         echo "Run '$0 --help' for usage information." >&2
@@ -1113,7 +1131,7 @@ validate_arguments() {
         exit 1
     fi
 
-    if [ "$AGENT_PROVIDER" = "codex" ] && [ -n "$MAX_COST" ]; then
+    if { [ "$AGENT_PROVIDER" = "codex" ] || { [ -n "$REVIEW_PROMPT" ] && [ "$REVIEW_PROVIDER" = "codex" ]; }; } && [ -n "$MAX_COST" ]; then
         if [ -z "$CODEX_INPUT_COST_PER_MILLION" ] || [ -z "$CODEX_OUTPUT_COST_PER_MILLION" ]; then
             echo "❌ Error: Codex CLI does not report USD cost. Use --codex-input-cost-per-million and --codex-output-cost-per-million with --max-cost." >&2
             exit 1
@@ -1228,15 +1246,29 @@ validate_arguments() {
 
 validate_requirements() {
     local agent_command
-    agent_command=$(get_agent_command)
+    agent_command=$(get_agent_command "$AGENT_PROVIDER")
     local agent_display
-    agent_display=$(get_agent_display_name)
+    agent_display=$(get_agent_display_name "$AGENT_PROVIDER")
     local install_url
-    install_url=$(get_agent_install_url)
+    install_url=$(get_agent_install_url "$AGENT_PROVIDER")
 
     if ! command -v "$agent_command" &> /dev/null; then
         echo "❌ Error: $agent_display is not installed: $install_url" >&2
         exit 1
+    fi
+
+    if [ -n "$REVIEW_PROMPT" ] && [ -n "$REVIEW_PROVIDER" ]; then
+        local review_command
+        review_command=$(get_agent_command "$REVIEW_PROVIDER")
+        local review_display
+        review_display=$(get_agent_display_name "$REVIEW_PROVIDER")
+        local review_install_url
+        review_install_url=$(get_agent_install_url "$REVIEW_PROVIDER")
+
+        if ! command -v "$review_command" &> /dev/null; then
+            echo "❌ Error: reviewer provider $review_display is not installed: $review_install_url" >&2
+            exit 1
+        fi
     fi
 
     if ! command -v jq &> /dev/null; then
@@ -2364,8 +2396,14 @@ run_reviewer_iteration() {
     local iteration_display="$1"
     local review_prompt="$2"
     local error_log="$3"
+    local provider="${REVIEW_PROVIDER:-$AGENT_PROVIDER}"
+    local original_provider="$AGENT_PROVIDER"
 
-    echo "🔍 $iteration_display Running reviewer pass..." >&2
+    AGENT_PROVIDER="$provider"
+    local reviewer_display
+    reviewer_display=$(get_agent_display_name "$provider")
+
+    echo "🔍 $iteration_display Running reviewer pass with $reviewer_display..." >&2
 
     # Build the reviewer prompt with context
     local full_reviewer_prompt="${PROMPT_REVIEWER_CONTEXT}
@@ -2377,10 +2415,11 @@ ${review_prompt}"
     # Run the selected provider with the reviewer prompt
     local result
     local agent_exit_code=0
-    result=$(run_agent_iteration "$full_reviewer_prompt" "$(get_agent_default_flags)" "$error_log" "$iteration_display") || agent_exit_code=$?
+    result=$(run_agent_iteration "$full_reviewer_prompt" "$(get_agent_default_flags "$provider")" "$error_log" "$iteration_display") || agent_exit_code=$?
 
     if [ $agent_exit_code -ne 0 ]; then
         echo "❌ $iteration_display Reviewer pass failed with exit code: $agent_exit_code" >&2
+        AGENT_PROVIDER="$original_provider"
         return 1
     fi
 
@@ -2388,6 +2427,7 @@ ${review_prompt}"
     local parse_result
     if ! parse_result=$(parse_agent_result "$result"); then
         echo "❌ $iteration_display Reviewer pass returned error: $parse_result" >&2
+        AGENT_PROVIDER="$original_provider"
         return 1
     fi
 
@@ -2407,6 +2447,7 @@ ${review_prompt}"
     fi
 
     echo "✅ $iteration_display Reviewer pass completed" >&2
+    AGENT_PROVIDER="$original_provider"
     return 0
 }
 

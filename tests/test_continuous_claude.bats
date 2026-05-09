@@ -57,6 +57,7 @@ require_pwsh() {
     assert_success
     assert_output --partial "Continuous Claude PowerShell"
     assert_output --partial "--review-prompt [text]"
+    assert_output --partial "--review-provider <provider>"
     assert_output --partial "--knowledge-file <file>"
     assert_output --partial "--stall-threshold <number>"
 }
@@ -75,6 +76,25 @@ require_pwsh() {
     assert_success
     assert_output --partial "Running reviewer pass"
     assert_output --partial "Review the currently changed files"
+    assert_output --partial "Skipping commits"
+}
+
+@test "powershell reviewer pass can use Codex with Claude main provider" {
+    require_pwsh
+
+    local fake_bin="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$fake_bin"
+    printf '#!/bin/sh\nexit 0\n' > "$fake_bin/claude"
+    printf '#!/bin/sh\nexit 0\n' > "$fake_bin/codex"
+    chmod +x "$fake_bin/claude" "$fake_bin/codex"
+
+    PATH="$fake_bin:$PATH" run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        --provider claude --review-provider codex -p "test" -r -m 1 --disable-commits --disable-updates --dry-run
+
+    assert_success
+    assert_output --partial "Running Claude Code"
+    assert_output --partial "Running reviewer pass with Codex CLI"
+    assert_output --partial "Would run Codex CLI"
     assert_output --partial "Skipping commits"
 }
 
@@ -100,6 +120,16 @@ require_pwsh() {
 
     run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
         --provider codex -p "test" --max-cost 5 --disable-commits
+
+    assert_failure
+    assert_output --partial "Codex CLI does not report USD cost"
+}
+
+@test "powershell Codex review provider max-cost requires token rates" {
+    require_pwsh
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        --provider claude --review-provider codex -p "test" -r --max-cost 5 --disable-commits
 
     assert_failure
     assert_output --partial "Codex CLI does not report USD cost"
@@ -161,6 +191,13 @@ require_pwsh() {
     parse_arguments --provider codex
 
     assert_equal "$AGENT_PROVIDER" "codex"
+}
+
+@test "parse_arguments handles review-provider flag" {
+    source "$SCRIPT_PATH"
+    parse_arguments --review-provider codex
+
+    assert_equal "$REVIEW_PROVIDER" "codex"
 }
 
 @test "parse_arguments forwards provider flags after separator" {
@@ -408,9 +445,37 @@ require_pwsh() {
     assert_output --partial "Error: --provider must be one of: claude, codex"
 }
 
+@test "validate_arguments fails with invalid review provider" {
+    source "$SCRIPT_PATH"
+    REVIEW_PROVIDER="invalid"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --review-provider must be one of: claude, codex"
+}
+
 @test "validate_arguments requires Codex token rates for max-cost" {
     source "$SCRIPT_PATH"
     AGENT_PROVIDER="codex"
+    PROMPT="test"
+    MAX_COST="5.00"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Codex CLI does not report USD cost"
+}
+
+@test "validate_arguments requires Codex token rates for review provider max-cost" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="claude"
+    REVIEW_PROVIDER="codex"
+    REVIEW_PROMPT="review"
     PROMPT="test"
     MAX_COST="5.00"
     GITHUB_OWNER="user"
@@ -510,6 +575,25 @@ require_pwsh() {
 
     assert_failure
     assert_output --partial "Error: Codex CLI is not installed"
+}
+
+@test "validate_requirements fails when codex is missing for review provider" {
+    function command() {
+        if [ "$2" == "codex" ]; then
+            return 1
+        fi
+        return 0
+    }
+    export -f command
+
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="claude"
+    REVIEW_PROVIDER="codex"
+    REVIEW_PROMPT="review"
+    run validate_requirements
+
+    assert_failure
+    assert_output --partial "Error: reviewer provider Codex CLI is not installed"
 }
 
 @test "validate_requirements fails when jq is missing" {
@@ -1188,6 +1272,25 @@ require_pwsh() {
     assert_equal "$error_content" "Codex auth failed"
 
     rm -f "$error_log"
+}
+
+@test "run_reviewer_iteration uses configured review provider" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="claude"
+    REVIEW_PROVIDER="codex"
+    DRY_RUN="true"
+
+    local error_log
+    error_log=$(mktemp)
+
+    run run_reviewer_iteration "(1/1)" "Review the branch" "$error_log"
+
+    rm -f "$error_log"
+
+    assert_success
+    assert_output --partial "Running reviewer pass with Codex CLI"
+    assert_output --partial "Would run Codex CLI"
+    assert_equal "$AGENT_PROVIDER" "claude"
 }
 
 @test "run_agent_iteration clears stale Codex error log before JSON error extraction" {
