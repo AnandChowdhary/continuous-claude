@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2155
 
 VERSION="v0.22.2"
 
@@ -29,8 +30,10 @@ This is part of a continuous development loop where work happens incrementally a
 
 ## PRIMARY GOAL"
 
+# shellcheck disable=SC2016
 PROMPT_NOTES_UPDATE_EXISTING='Update the `$NOTES_FILE` file with relevant context for the next iteration. Add new notes and remove outdated information to keep it current and useful.'
 
+# shellcheck disable=SC2016
 PROMPT_NOTES_CREATE_NEW='Create a `$NOTES_FILE` file with relevant context and instructions for the next iteration.'
 
 PROMPT_NOTES_GUIDELINES="
@@ -1189,8 +1192,7 @@ wait_for_pr_checks() {
         
         if [ "$check_count" -gt 0 ]; then
             local idx=0
-            while [ $idx -lt $check_count ]; do
-                local state=$(echo "$checks_json" | jq -r ".[$idx].state")
+            while [ "$idx" -lt "$check_count" ]; do
                 local bucket=$(echo "$checks_json" | jq -r ".[$idx].bucket // \"pending\"")
 
                 if [ "$bucket" = "pending" ] || [ "$bucket" = "null" ]; then
@@ -1829,7 +1831,6 @@ cleanup_worktree() {
     echo "🗑️  Cleaning up worktree '$WORKTREE_NAME'..." >&2
     
     # Try to find the main repo
-    local current_dir=$(pwd)
     local git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
     
     if [ -n "$git_common_dir" ]; then
@@ -1853,7 +1854,7 @@ get_iteration_display() {
     local max_runs=$2
     local extra_iters=$3
     
-    if [ $max_runs -eq 0 ]; then
+    if [ "$max_runs" -eq 0 ]; then
         echo "($iteration_num)"
     else
         local total=$((max_runs + extra_iters))
@@ -1874,6 +1875,7 @@ run_agent_prompt_quiet() {
             claude -p "$prompt" --allowedTools "$allowed_tools" --dangerously-skip-permissions "${EXTRA_AGENT_FLAGS[@]}" >/dev/null 2>&1
             ;;
         codex)
+            # shellcheck disable=SC2086
             codex exec $CODEX_ADDITIONAL_FLAGS -C "$PWD" "${EXTRA_AGENT_FLAGS[@]}" "$prompt" >/dev/null 2>&1
             ;;
         *)
@@ -1891,6 +1893,7 @@ run_claude_provider_iteration() {
     if [ "$DRY_RUN" = "true" ]; then
         echo "🤖 (DRY RUN) Would run Claude Code with prompt: $prompt" >&2
         echo "📝 (DRY RUN) Output: This is a simulated response from Claude Code." > "$error_log"
+        echo '{"type":"result","is_error":false,"result":"This is a simulated response from Claude Code."}'
         return 0
     fi
 
@@ -1903,6 +1906,7 @@ run_claude_provider_iteration() {
     # Stream stdout (stream-json) to terminal in human-readable format while capturing raw JSON
     # Filter extracts text from assistant messages for display
     set -o pipefail
+    # shellcheck disable=SC2086
     claude -p "$prompt" $flags "${EXTRA_AGENT_FLAGS[@]}" 2> >(tee "$temp_stderr" >&2) | \
         tee "$temp_stdout" | \
         while IFS= read -r line; do
@@ -2038,7 +2042,7 @@ run_claude_provider_iteration() {
     fi
     
     # If claude failed, check for error info in both stderr and stdout (JSON)
-    if [ $exit_code -ne 0 ]; then
+    if [ "$exit_code" -ne 0 ]; then
         # If stderr is empty, try to extract error from JSON stdout
         if [ ! -s "$error_log" ] && [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
             # Check if stdout contains JSON with error info (stream-json format)
@@ -2066,7 +2070,7 @@ run_claude_provider_iteration() {
         
         # Cleanup temp files after error handling
         rm -f "$temp_stdout" "$temp_stderr"
-        return $exit_code
+        return "$exit_code"
     fi
     
     # Cleanup temp files on success
@@ -2084,6 +2088,8 @@ run_codex_provider_iteration() {
     if [ "$DRY_RUN" = "true" ]; then
         echo "🤖 (DRY RUN) Would run Codex CLI with prompt: $prompt" >&2
         echo "📝 (DRY RUN) Output: This is a simulated response from Codex CLI." > "$error_log"
+        echo '{"type":"item.completed","item":{"type":"agent_message","text":"This is a simulated response from Codex CLI."}}'
+        echo '{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}}'
         return 0
     fi
 
@@ -2092,6 +2098,7 @@ run_codex_provider_iteration() {
     local exit_code=0
 
     set -o pipefail
+    # shellcheck disable=SC2086
     codex exec $flags -C "$PWD" "${EXTRA_AGENT_FLAGS[@]}" "$prompt" 2> >(tee "$temp_stderr" >&2) | \
         tee "$temp_stdout" | \
         while IFS= read -r line; do
@@ -2141,7 +2148,7 @@ run_codex_provider_iteration() {
         cat "$temp_stderr" > "$error_log"
     fi
 
-    if [ $exit_code -ne 0 ]; then
+    if [ "$exit_code" -ne 0 ]; then
         if [ ! -s "$error_log" ] && [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
             local json_error
             json_error=$(cat "$temp_stdout" | jq -s -r '[.[] | select(.type == "error" or .type == "turn.failed") | .message // .error // .] | last // empty' 2>/dev/null || echo "")
@@ -2166,7 +2173,7 @@ run_codex_provider_iteration() {
         fi
 
         rm -f "$temp_stdout" "$temp_stderr"
-        return $exit_code
+        return "$exit_code"
     fi
 
     rm -f "$temp_stdout" "$temp_stderr"
@@ -2222,8 +2229,8 @@ ${review_prompt}"
     fi
 
     # Parse and validate the result
-    local parse_result=$(parse_agent_result "$result")
-    if [ "$?" != "0" ]; then
+    local parse_result
+    if ! parse_result=$(parse_agent_result "$result"); then
         echo "❌ $iteration_display Reviewer pass returned error: $parse_result" >&2
         return 1
     fi
@@ -2296,8 +2303,8 @@ run_ci_fix_iteration() {
     fi
 
     # Parse and validate the result
-    local parse_result=$(parse_agent_result "$result")
-    if [ "$?" != "0" ]; then
+    local parse_result
+    if ! parse_result=$(parse_agent_result "$result"); then
         echo "❌ $iteration_display CI fix returned error: $parse_result" >&2
         return 1
     fi
@@ -2333,7 +2340,7 @@ attempt_ci_fix_and_recheck() {
 
     local retry_attempt=1
 
-    while [ $retry_attempt -le $CI_RETRY_MAX_ATTEMPTS ]; do
+    while [ "$retry_attempt" -le "$CI_RETRY_MAX_ATTEMPTS" ]; do
         # Run CI fix iteration
         if ! run_ci_fix_iteration "$iteration_display" "$pr_number" "$owner" "$repo" "$branch_name" "$error_log" "$retry_attempt"; then
             echo "⚠️  $iteration_display CI fix attempt $retry_attempt failed" >&2
@@ -2399,8 +2406,8 @@ run_comment_fix_iteration() {
     fi
 
     # Parse and validate the result
-    local parse_result=$(parse_agent_result "$result")
-    if [ "$?" != "0" ]; then
+    local parse_result
+    if ! parse_result=$(parse_agent_result "$result"); then
         echo "❌ $iteration_display Comment review returned error: $parse_result" >&2
         return 1
     fi
@@ -2434,7 +2441,7 @@ attempt_comment_fix_and_recheck() {
 
     local retry_attempt=1
 
-    while [ $retry_attempt -le $COMMENT_REVIEW_MAX_ATTEMPTS ]; do
+    while [ "$retry_attempt" -le "$COMMENT_REVIEW_MAX_ATTEMPTS" ]; do
         # Run comment fix iteration
         if ! run_comment_fix_iteration "$iteration_display" "$pr_number" "$owner" "$repo" "$branch_name" "$error_log" "$retry_attempt"; then
             echo "⚠️  $iteration_display Comment review attempt $retry_attempt failed, proceeding to merge" >&2
@@ -2633,7 +2640,7 @@ handle_iteration_error() {
             ;;
     esac
     
-    if [ $error_count -ge 3 ]; then
+    if [ "$error_count" -ge 3 ]; then
         echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
         exit 1
     fi
@@ -2656,7 +2663,7 @@ handle_iteration_success() {
         echo "" >&2
         echo "🎯 $iteration_display Completion signal detected ($completion_signal_count/$COMPLETION_THRESHOLD)" >&2
     else
-        if [ $completion_signal_count -gt 0 ]; then
+        if [ "$completion_signal_count" -gt 0 ]; then
             echo "" >&2
             echo "🔄 $iteration_display Completion signal not found, resetting counter" >&2
         fi
@@ -2686,7 +2693,7 @@ handle_iteration_success() {
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
                 echo "❌ $iteration_display Commit failed ($error_count consecutive errors)" >&2
-                if [ $error_count -ge 3 ]; then
+                if [ "$error_count" -ge 3 ]; then
                     echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
                     exit 1
                 fi
@@ -2698,7 +2705,7 @@ handle_iteration_success() {
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
                 echo "❌ $iteration_display PR merge queue failed ($error_count consecutive errors)" >&2
-                if [ $error_count -ge 3 ]; then
+                if [ "$error_count" -ge 3 ]; then
                     echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
                     exit 1
                 fi
@@ -2715,7 +2722,7 @@ handle_iteration_success() {
     fi
     
     error_count=0
-    if [ $extra_iterations -gt 0 ]; then
+    if [ "$extra_iterations" -gt 0 ]; then
         extra_iterations=$((extra_iterations - 1))
     fi
     successful_iterations=$((successful_iterations + 1))
@@ -2725,16 +2732,17 @@ handle_iteration_success() {
 execute_single_iteration() {
     local iteration_num=$1
     
-    local iteration_display=$(get_iteration_display $iteration_num $MAX_RUNS $extra_iterations)
+    local iteration_display
+    iteration_display=$(get_iteration_display "$iteration_num" "${MAX_RUNS:-0}" "$extra_iterations")
     echo "🔄 $iteration_display Starting iteration..." >&2
 
     # Get current branch and create iteration branch
-    local main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    local main_branch
+    main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
     local branch_name=""
     
     if [ "$ENABLE_COMMITS" = "true" ] && [ "$DISABLE_BRANCHES" != "true" ]; then
-        branch_name=$(create_iteration_branch "$iteration_display" "$iteration_num")
-        if [ $? -ne 0 ] || [ -z "$branch_name" ]; then
+        if ! branch_name=$(create_iteration_branch "$iteration_display" "$iteration_num") || [ -z "$branch_name" ]; then
             if git rev-parse --git-dir > /dev/null 2>&1; then
                 echo "❌ $iteration_display Failed to create branch" >&2
                 handle_iteration_error "$iteration_display" "exit_code" ""
@@ -2783,7 +2791,7 @@ $notes_content
     local agent_exit_code=0
     result=$(run_agent_iteration "$enhanced_prompt" "$(get_agent_default_flags)" "$ERROR_LOG" "$iteration_display") || agent_exit_code=$?
     
-    if [ $agent_exit_code -ne 0 ]; then
+    if [ "$agent_exit_code" -ne 0 ]; then
         echo "" >&2
         echo "⚠️  $agent_display command failed with exit code: $agent_exit_code" >&2
         # Clean up branch on error
@@ -2795,8 +2803,8 @@ $notes_content
         return 1
     fi
     
-    local parse_result=$(parse_agent_result "$result")
-    if [ "$?" != "0" ]; then
+    local parse_result
+    if ! parse_result=$(parse_agent_result "$result"); then
         # Clean up branch on error
         if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
             git checkout "$main_branch" >/dev/null 2>&1
@@ -2818,7 +2826,7 @@ $notes_content
             # Count as an error for consecutive error tracking
             error_count=$((error_count + 1))
             extra_iterations=$((extra_iterations + 1))
-            if [ $error_count -ge 3 ]; then
+            if [ "$error_count" -ge 3 ]; then
                 echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
                 exit 1
             fi
@@ -2841,7 +2849,7 @@ main_loop() {
         local should_continue=false
         
         # Continue if MAX_RUNS is not set or not reached
-        if [ -z "$MAX_RUNS" ] || [ "$MAX_RUNS" -eq 0 ] || [ $successful_iterations -lt $MAX_RUNS ]; then
+        if [ -z "$MAX_RUNS" ] || [ "$MAX_RUNS" -eq 0 ] || [ "$successful_iterations" -lt "$MAX_RUNS" ]; then
             should_continue=true
         fi
         
@@ -2854,7 +2862,7 @@ main_loop() {
         if [ -n "$MAX_DURATION" ] && [ -n "$start_time" ]; then
             local current_time=$(date +%s)
             local elapsed_time=$((current_time - start_time))
-            if [ $elapsed_time -ge $MAX_DURATION ]; then
+            if [ "$elapsed_time" -ge "$MAX_DURATION" ]; then
                 echo "" >&2
                 echo "⏱️  Maximum duration reached ($(format_duration $elapsed_time))" >&2
                 should_continue=false
@@ -2862,12 +2870,12 @@ main_loop() {
         fi
         
         # If both limits are set and both are reached, stop
-        if [ -n "$MAX_RUNS" ] && [ "$MAX_RUNS" -ne 0 ] && [ $successful_iterations -ge $MAX_RUNS ]; then
+        if [ -n "$MAX_RUNS" ] && [ "$MAX_RUNS" -ne 0 ] && [ "$successful_iterations" -ge "$MAX_RUNS" ]; then
             should_continue=false
         fi
         
         # Stop if completion signal threshold reached
-        if [ $completion_signal_count -ge $COMPLETION_THRESHOLD ]; then
+        if [ "$completion_signal_count" -ge "$COMPLETION_THRESHOLD" ]; then
             echo "" >&2
             echo "🎉 Project completion signal detected $completion_signal_count times consecutively!" >&2
             should_continue=false
@@ -2894,13 +2902,13 @@ show_completion_summary() {
     fi
     
     # Show completion signal message if that's why we stopped
-    if [ $completion_signal_count -ge $COMPLETION_THRESHOLD ]; then
+    if [ "$completion_signal_count" -ge "$COMPLETION_THRESHOLD" ]; then
         if [ -n "$total_cost" ] && [ "$(awk "BEGIN {print ($total_cost > 0)}")" = "1" ]; then
             printf "✨ Project completed! Detected completion signal %d times in a row. Total cost: \$%.3f%s\n" "$completion_signal_count" "$total_cost" "$elapsed_msg"
         else
             printf "✨ Project completed! Detected completion signal %d times in a row.%s\n" "$completion_signal_count" "$elapsed_msg"
         fi
-    elif [ -n "$MAX_RUNS" ] && [ $MAX_RUNS -ne 0 ] || [ -n "$MAX_COST" ] || [ -n "$MAX_DURATION" ]; then
+    elif { [ -n "$MAX_RUNS" ] && [ "$MAX_RUNS" -ne 0 ]; } || [ -n "$MAX_COST" ] || [ -n "$MAX_DURATION" ]; then
         if [ -n "$total_cost" ] && [ "$(awk "BEGIN {print ($total_cost > 0)}")" = "1" ]; then
             printf "🎉 Done with total cost: \$%.3f%s\n" "$total_cost" "$elapsed_msg"
         else 
@@ -2915,7 +2923,6 @@ main() {
         shift
         parse_update_flags "$@"
         handle_update_command
-        exit 0
     fi
     
     parse_arguments "$@"
@@ -2934,7 +2941,7 @@ main() {
     setup_worktree
     
     ERROR_LOG=$(mktemp)
-    trap "rm -f $ERROR_LOG; cleanup_worktree" EXIT
+    trap 'rm -f "$ERROR_LOG"; cleanup_worktree' EXIT
     
     main_loop
     show_completion_summary
