@@ -55,8 +55,13 @@ echo "🔍 Checking dependencies..."
 
 missing_deps=()
 
-if ! command -v claude &> /dev/null; then
-    missing_deps+=("Claude Code CLI")
+has_agent=false
+if command -v claude &> /dev/null || command -v codex &> /dev/null; then
+    has_agent=true
+fi
+
+if [ "$has_agent" = "false" ]; then
+    missing_deps+=("Claude Code CLI or Codex CLI")
 fi
 
 if ! command -v gh &> /dev/null; then
@@ -79,10 +84,12 @@ else
     if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "  brew install gh jq"
         echo "  brew install --cask claude-code"
+        echo "  npm install -g @openai/codex  # optional Codex provider"
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         echo "  # Install GitHub CLI: https://github.com/cli/cli#installation"
         echo "  sudo apt-get install jq  # or equivalent for your distro"
         echo "  # Install Claude Code CLI: https://code.claude.com"
+        echo "  # Install Codex CLI: https://help.openai.com/en/articles/11096431"
     fi
 fi
 
@@ -91,6 +98,6 @@ echo -e "${GREEN}🎉 Installation complete!${NC}"
 echo ""
 echo "Get started with:"
 echo "  $BINARY_NAME --prompt \"your task\" --max-runs 5 --owner YourGitHubUser --repo your-repo"
+echo "  $BINARY_NAME --provider codex --prompt \"your task\" --max-runs 5 --owner YourGitHubUser --repo your-repo"
 echo ""
 echo "For more information, visit: https://github.com/AnandChowdhary/continuous-claude"
-
