@@ -812,6 +812,29 @@ setup() {
     rm -f "$error_log"
 }
 
+@test "run_agent_iteration clears stale Codex error log before JSON error extraction" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+
+    function codex() {
+        echo '{"type":"error","message":"Fresh Codex JSON failure"}'
+        return 1
+    }
+    export -f codex
+
+    local error_log=$(mktemp)
+    echo "stale previous error" > "$error_log"
+
+    run run_agent_iteration "test prompt" "$CODEX_ADDITIONAL_FLAGS" "$error_log" "(1/1)"
+
+    assert_failure
+    assert [ -s "$error_log" ]
+    local error_content=$(cat "$error_log")
+    assert_equal "$error_content" "Fresh Codex JSON failure"
+
+    rm -f "$error_log"
+}
+
 @test "run_agent_prompt_quiet uses Codex provider" {
     source "$SCRIPT_PATH"
     AGENT_PROVIDER="codex"

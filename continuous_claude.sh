@@ -2186,6 +2186,8 @@ run_agent_iteration() {
     local error_log="$3"
     local iteration_display="$4"
 
+    : > "$error_log"
+
     case "$AGENT_PROVIDER" in
         claude)
             run_claude_provider_iteration "$prompt" "$flags" "$error_log" "$iteration_display"
