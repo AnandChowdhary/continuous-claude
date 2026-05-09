@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.24.5] - 2026-05-09
+
+### What's Changed
+
+- Add durable knowledge recording prompt (#61) (8181191)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.24.4...v0.24.5
+
+
 ## [v0.24.4] - 2026-05-09
 
 ### What's Changed

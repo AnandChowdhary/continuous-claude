@@ -1,7 +1,7 @@
 #!/bin/bash
 # shellcheck disable=SC2155
 
-VERSION="v0.24.4"
+VERSION="v0.24.5"
 
 ADDITIONAL_FLAGS="--dangerously-skip-permissions --output-format stream-json --verbose"
 CODEX_ADDITIONAL_FLAGS="--json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check"
