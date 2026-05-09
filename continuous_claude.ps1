@@ -104,6 +104,7 @@ OPTIONAL FLAGS:
     --git-branch-prefix <prefix>    Branch prefix for iterations (default: continuous-claude/)
     --merge-strategy <strategy>     PR merge strategy: squash, merge, or rebase (default: squash)
     --notes-file <file>             Shared notes file for iteration context (default: SHARED_TASK_NOTES.md)
+    --knowledge-file <file>         Bash-runner only; durable project knowledge file
     --dry-run                       Simulate execution without making changes
     --completion-signal <phrase>    Phrase agents output when project is complete
     --completion-threshold <num>    Consecutive signals required to stop early (default: 3)
@@ -235,6 +236,9 @@ function Parse-Arguments {
                 $script:NotesFile = Need-Value $Items $i $arg
                 $i += 2
                 continue
+            }
+            "^--knowledge-file$" {
+                Exit-UnsupportedFlag $arg
             }
             "^--disable-commits$" {
                 $script:EnableCommits = $false

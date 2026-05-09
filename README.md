@@ -182,6 +182,7 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 - `--merge-strategy`: Merge strategy: `squash`, `merge`, or `rebase` (default: `squash`)
 - `--git-branch-prefix`: Prefix for git branch names (default: `continuous-claude/`)
 - `--notes-file`: Path to shared task notes file (default: `SHARED_TASK_NOTES.md`)
+- `--knowledge-file <file>`: Path to a durable project knowledge file to maintain across iterations, such as `CLAUDE.md`
 - `--disable-commits`: Disable automatic git commits, PR creation, and merging (useful for testing)
 - `--disable-branches`: Commit on current branch without creating branches or PRs
 - `--worktree <name>`: Run in a git worktree for parallel execution (creates if needed)
@@ -245,6 +246,9 @@ continuous-claude -p "refactor code" -m 3 --git-branch-prefix "feature/"
 
 # Use custom notes file
 continuous-claude -p "add features" -m 5 --notes-file "PROJECT_CONTEXT.md"
+
+# Record durable project knowledge for future AI/human developers
+continuous-claude -p "modernize the API" -m 5 --knowledge-file "CLAUDE.md"
 
 # Test without creating commits or PRs
 continuous-claude -p "test changes" -m 2 --disable-commits
