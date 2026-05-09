@@ -1,12 +1,18 @@
 #!/bin/bash
+# shellcheck disable=SC2155
 
 VERSION="v0.22.2"
 
 ADDITIONAL_FLAGS="--dangerously-skip-permissions --output-format stream-json --verbose"
+CODEX_ADDITIONAL_FLAGS="--json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check"
 
 NOTES_FILE="SHARED_TASK_NOTES.md"
 AUTO_UPDATE=false
 DISABLE_UPDATES=false
+AGENT_PROVIDER="${CONTINUOUS_CLAUDE_PROVIDER:-claude}"
+CODEX_INPUT_COST_PER_MILLION="${CODEX_INPUT_COST_PER_MILLION:-}"
+CODEX_OUTPUT_COST_PER_MILLION="${CODEX_OUTPUT_COST_PER_MILLION:-}"
+CODEX_CACHED_INPUT_COST_PER_MILLION="${CODEX_CACHED_INPUT_COST_PER_MILLION:-}"
 
 PROMPT_JQ_INSTALL="Please install jq for JSON parsing"
 
@@ -24,9 +30,11 @@ This is part of a continuous development loop where work happens incrementally a
 
 ## PRIMARY GOAL"
 
-PROMPT_NOTES_UPDATE_EXISTING="Update the \`$NOTES_FILE\` file with relevant context for the next iteration. Add new notes and remove outdated information to keep it current and useful."
+# shellcheck disable=SC2016
+PROMPT_NOTES_UPDATE_EXISTING='Update the `$NOTES_FILE` file with relevant context for the next iteration. Add new notes and remove outdated information to keep it current and useful.'
 
-PROMPT_NOTES_CREATE_NEW="Create a \`$NOTES_FILE\` file with relevant context and instructions for the next iteration."
+# shellcheck disable=SC2016
+PROMPT_NOTES_CREATE_NEW='Create a `$NOTES_FILE` file with relevant context and instructions for the next iteration.'
 
 PROMPT_NOTES_GUIDELINES="
 
@@ -107,6 +115,7 @@ successful_iterations=0
 total_cost=0
 completion_signal_count=0
 i=1
+EXTRA_AGENT_FLAGS=()
 EXTRA_CLAUDE_FLAGS=()
 REVIEW_PROMPT=""
 start_time=""
@@ -197,11 +206,11 @@ show_help() {
 Continuous Claude - Run Claude Code iteratively with automatic PR management
 
 USAGE:
-    continuous-claude -p "prompt" (-m max-runs | --max-cost max-cost | --max-duration duration) [--owner owner] [--repo repo] [options]
+    continuous-claude -p "prompt" (-m max-runs | --max-cost max-cost | --max-duration duration) [--provider claude|codex] [--owner owner] [--repo repo] [options]
     continuous-claude update
 
 REQUIRED OPTIONS:
-    -p, --prompt <text>           The prompt/goal for Claude Code to work on
+    -p, --prompt <text>           The prompt/goal for the selected agent to work on
     -m, --max-runs <number>       Maximum number of successful iterations (use 0 for unlimited with --max-cost or --max-duration)
     --max-cost <dollars>          Maximum cost in USD to spend (alternative to --max-runs)
     --max-duration <duration>     Maximum duration to run (e.g., "2h", "30m", "1h30m") (alternative to --max-runs)
@@ -209,6 +218,7 @@ REQUIRED OPTIONS:
 OPTIONAL FLAGS:
     -h, --help                    Show this help message
     -v, --version                 Show version information
+    --provider <provider>         AI coding agent provider: claude or codex (default: claude)
     --owner <owner>               GitHub repository owner (auto-detected from git remote if not provided)
     --repo <repo>                 GitHub repository name (auto-detected from git remote if not provided)
     --disable-commits             Disable automatic commits and PR creation
@@ -232,6 +242,13 @@ OPTIONAL FLAGS:
     --ci-retry-max <number>       Maximum CI fix attempts per PR (default: 1)
     --disable-comment-review      Disable automatic PR comment review (enabled by default)
     --comment-review-max <number> Maximum comment review attempts per PR (default: 1)
+    --codex-input-cost-per-million <dollars>
+                                  Input token rate for Codex --max-cost estimates
+    --codex-output-cost-per-million <dollars>
+                                  Output token rate for Codex --max-cost estimates
+    --codex-cached-input-cost-per-million <dollars>
+                                  Cached input token rate for Codex estimates (defaults to input rate)
+    --                            Stop parsing continuous-claude options; forward the rest to the provider CLI
 
 COMMANDS:
     update                        Check for and install the latest version
@@ -240,8 +257,19 @@ EXAMPLES:
     # Run 5 iterations to fix bugs
     continuous-claude -p "Fix all linter errors" -m 5 --owner myuser --repo myproject
 
+    # Run 5 iterations with Codex CLI instead of Claude Code
+    continuous-claude --provider codex -p "Fix all linter errors" -m 5 --owner myuser --repo myproject
+
     # Run with cost limit
     continuous-claude -p "Add tests" --max-cost 10.00 --owner myuser --repo myproject
+
+    # Run Codex with a cost limit using explicit token rates
+    continuous-claude --provider codex -p "Add tests" --max-cost 10.00 \\
+        --codex-input-cost-per-million 1.25 --codex-output-cost-per-million 10.00 \\
+        --owner myuser --repo myproject
+
+    # Pass provider-specific flags after --
+    continuous-claude --provider codex -p "Add tests" -m 5 -- --model gpt-5.5
 
     # Run for a maximum duration (time-boxed)
     continuous-claude -p "Add documentation" --max-duration 2h --owner myuser --repo myproject
@@ -294,7 +322,7 @@ EXAMPLES:
     continuous-claude update
 
 REQUIREMENTS:
-    - Claude Code CLI (https://claude.ai/code)
+    - Claude Code CLI (https://claude.ai/code) or Codex CLI (https://help.openai.com/en/articles/11096431)
     - GitHub CLI (gh) - authenticated with 'gh auth login'
     - jq - JSON parsing utility
     - Git repository (unless --disable-commits is used)
@@ -308,6 +336,80 @@ EOF
 
 show_version() {
     echo "continuous-claude version $VERSION"
+}
+
+get_agent_display_name() {
+    case "$AGENT_PROVIDER" in
+        claude)
+            echo "Claude Code"
+            ;;
+        codex)
+            echo "Codex CLI"
+            ;;
+        *)
+            echo "$AGENT_PROVIDER"
+            ;;
+    esac
+}
+
+get_agent_command() {
+    case "$AGENT_PROVIDER" in
+        claude)
+            echo "claude"
+            ;;
+        codex)
+            echo "codex"
+            ;;
+        *)
+            echo "$AGENT_PROVIDER"
+            ;;
+    esac
+}
+
+get_agent_install_url() {
+    case "$AGENT_PROVIDER" in
+        claude)
+            echo "https://claude.ai/code"
+            ;;
+        codex)
+            echo "https://help.openai.com/en/articles/11096431"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+get_agent_default_flags() {
+    case "$AGENT_PROVIDER" in
+        claude)
+            echo "$ADDITIONAL_FLAGS"
+            ;;
+        codex)
+            echo "$CODEX_ADDITIONAL_FLAGS"
+            ;;
+    esac
+}
+
+add_extra_agent_flag() {
+    EXTRA_AGENT_FLAGS+=("$1")
+    # Keep the legacy variable populated for tests and callers that source the script.
+    EXTRA_CLAUDE_FLAGS+=("$1")
+}
+
+is_non_negative_number() {
+    local value="$1"
+    [[ "$value" =~ ^[0-9]+\.?[0-9]*$ ]]
+}
+
+is_positive_number() {
+    local value="$1"
+    is_non_negative_number "$value" && [ "$(awk "BEGIN {print ($value > 0)}")" = "1" ]
+}
+
+render_notes_prompt() {
+    local template="$1"
+    echo "${template//\$NOTES_FILE/$NOTES_FILE}"
 }
 
 get_latest_version() {
@@ -720,6 +822,13 @@ detect_github_repo() {
 parse_arguments() {
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --)
+                shift
+                while [[ $# -gt 0 ]]; do
+                    add_extra_agent_flag "$1"
+                    shift
+                done
+                ;;
             -h|--help)
                 show_help
                 exit 0
@@ -734,6 +843,22 @@ parse_arguments() {
                 ;;
             -m|--max-runs)
                 MAX_RUNS="$2"
+                shift 2
+                ;;
+            --provider)
+                AGENT_PROVIDER="$2"
+                shift 2
+                ;;
+            --codex-input-cost-per-million)
+                CODEX_INPUT_COST_PER_MILLION="$2"
+                shift 2
+                ;;
+            --codex-output-cost-per-million)
+                CODEX_OUTPUT_COST_PER_MILLION="$2"
+                shift 2
+                ;;
+            --codex-cached-input-cost-per-million)
+                CODEX_CACHED_INPUT_COST_PER_MILLION="$2"
                 shift 2
                 ;;
             --max-cost)
@@ -829,8 +954,8 @@ parse_arguments() {
                 shift 2
                 ;;
             *)
-                # Collect unknown flags to forward to claude
-                EXTRA_CLAUDE_FLAGS+=("$1")
+                # Collect unknown flags to forward to the selected provider CLI.
+                add_extra_agent_flag "$1"
                 shift
                 ;;
         esac
@@ -861,6 +986,11 @@ parse_update_flags() {
 }
 
 validate_arguments() {
+    if [[ ! "$AGENT_PROVIDER" =~ ^(claude|codex)$ ]]; then
+        echo "❌ Error: --provider must be one of: claude, codex" >&2
+        exit 1
+    fi
+
     if [ -z "$PROMPT" ]; then
         echo "❌ Error: Prompt is required. Use -p to provide a prompt." >&2
         echo "Run '$0 --help' for usage information." >&2
@@ -873,14 +1003,40 @@ validate_arguments() {
         exit 1
     fi
 
+    if [ "$DRY_RUN" = "true" ] && [ -z "$MAX_RUNS" ] && [ -n "$MAX_COST" ] && [ -z "$MAX_DURATION" ]; then
+        MAX_RUNS="1"
+    fi
+
     if [ -n "$MAX_RUNS" ] && ! [[ "$MAX_RUNS" =~ ^[0-9]+$ ]]; then
         echo "❌ Error: --max-runs must be a non-negative integer" >&2
         exit 1
     fi
 
     if [ -n "$MAX_COST" ]; then
-        if ! [[ "$MAX_COST" =~ ^[0-9]+\.?[0-9]*$ ]] || [ "$(awk "BEGIN {print ($MAX_COST <= 0)}")" = "1" ]; then
+        if ! is_positive_number "$MAX_COST"; then
             echo "❌ Error: --max-cost must be a positive number" >&2
+            exit 1
+        fi
+    fi
+
+    if [ -n "$CODEX_INPUT_COST_PER_MILLION" ] && ! is_positive_number "$CODEX_INPUT_COST_PER_MILLION"; then
+        echo "❌ Error: --codex-input-cost-per-million must be a positive number" >&2
+        exit 1
+    fi
+
+    if [ -n "$CODEX_OUTPUT_COST_PER_MILLION" ] && ! is_positive_number "$CODEX_OUTPUT_COST_PER_MILLION"; then
+        echo "❌ Error: --codex-output-cost-per-million must be a positive number" >&2
+        exit 1
+    fi
+
+    if [ -n "$CODEX_CACHED_INPUT_COST_PER_MILLION" ] && ! is_non_negative_number "$CODEX_CACHED_INPUT_COST_PER_MILLION"; then
+        echo "❌ Error: --codex-cached-input-cost-per-million must be a non-negative number" >&2
+        exit 1
+    fi
+
+    if [ "$AGENT_PROVIDER" = "codex" ] && [ -n "$MAX_COST" ]; then
+        if [ -z "$CODEX_INPUT_COST_PER_MILLION" ] || [ -z "$CODEX_OUTPUT_COST_PER_MILLION" ]; then
+            echo "❌ Error: Codex CLI does not report USD cost. Use --codex-input-cost-per-million and --codex-output-cost-per-million with --max-cost." >&2
             exit 1
         fi
     fi
@@ -957,16 +1113,23 @@ validate_arguments() {
 }
 
 validate_requirements() {
-    if ! command -v claude &> /dev/null; then
-        echo "❌ Error: Claude Code is not installed: https://claude.ai/code" >&2
+    local agent_command
+    agent_command=$(get_agent_command)
+    local agent_display
+    agent_display=$(get_agent_display_name)
+    local install_url
+    install_url=$(get_agent_install_url)
+
+    if ! command -v "$agent_command" &> /dev/null; then
+        echo "❌ Error: $agent_display is not installed: $install_url" >&2
         exit 1
     fi
 
     if ! command -v jq &> /dev/null; then
-        echo "⚠️ jq is required for JSON parsing but is not installed. Asking Claude Code to install it..." >&2
-        claude -p "$PROMPT_JQ_INSTALL" --allowedTools "Bash,Read"
+        echo "⚠️ jq is required for JSON parsing but is not installed. Asking $agent_display to install it..." >&2
+        run_agent_prompt_quiet "$PROMPT_JQ_INSTALL" "setup"
         if ! command -v jq &> /dev/null; then
-            echo "❌ Error: jq is still not installed after Claude Code attempt." >&2
+            echo "❌ Error: jq is still not installed after $agent_display attempt." >&2
             exit 1
         fi
     fi
@@ -1029,8 +1192,7 @@ wait_for_pr_checks() {
         
         if [ "$check_count" -gt 0 ]; then
             local idx=0
-            while [ $idx -lt $check_count ]; do
-                local state=$(echo "$checks_json" | jq -r ".[$idx].state")
+            while [ "$idx" -lt "$check_count" ]; do
                 local bucket=$(echo "$checks_json" | jq -r ".[$idx].bucket // \"pending\"")
 
                 if [ "$bucket" = "pending" ] || [ "$bucket" = "null" ]; then
@@ -1371,7 +1533,7 @@ continuous_claude_commit() {
         has_uncommitted_changes=true
     fi
 
-    # Claude Code is instructed not to commit, but if it does, the branch can be
+    # The selected agent is instructed not to commit, but if it does, the branch can be
     # ahead of main while the worktree is clean. Treat those commits as changes
     # so we still push the branch and create the PR instead of deleting it.
     local commits_ahead
@@ -1400,7 +1562,7 @@ continuous_claude_commit() {
     if [ "$has_uncommitted_changes" = "true" ]; then
         echo "💬 $iteration_display Committing changes..." >&2
         
-        if ! claude -p "$PROMPT_COMMIT_MESSAGE" --allowedTools "Bash(git)" --dangerously-skip-permissions >/dev/null 2>&1; then
+        if ! run_agent_prompt_quiet "$PROMPT_COMMIT_MESSAGE"; then
             echo "⚠️  $iteration_display Failed to commit changes" >&2
             git checkout "$main_branch" >/dev/null 2>&1
             return 1
@@ -1546,7 +1708,7 @@ commit_on_current_branch() {
 
     echo "💬 $iteration_display Committing changes on current branch..." >&2
 
-    if ! claude -p "$PROMPT_COMMIT_MESSAGE" --allowedTools "Bash(git)" --dangerously-skip-permissions >/dev/null 2>&1; then
+    if ! run_agent_prompt_quiet "$PROMPT_COMMIT_MESSAGE"; then
         echo "⚠️  $iteration_display Failed to commit changes" >&2
         return 1
     fi
@@ -1669,7 +1831,6 @@ cleanup_worktree() {
     echo "🗑️  Cleaning up worktree '$WORKTREE_NAME'..." >&2
     
     # Try to find the main repo
-    local current_dir=$(pwd)
     local git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
     
     if [ -n "$git_common_dir" ]; then
@@ -1693,7 +1854,7 @@ get_iteration_display() {
     local max_runs=$2
     local extra_iters=$3
     
-    if [ $max_runs -eq 0 ]; then
+    if [ "$max_runs" -eq 0 ]; then
         echo "($iteration_num)"
     else
         local total=$((max_runs + extra_iters))
@@ -1701,7 +1862,29 @@ get_iteration_display() {
     fi
 }
 
-run_claude_iteration() {
+run_agent_prompt_quiet() {
+    local prompt="$1"
+    local mode="${2:-git}"
+
+    case "$AGENT_PROVIDER" in
+        claude)
+            local allowed_tools="Bash(git)"
+            if [ "$mode" = "setup" ]; then
+                allowed_tools="Bash,Read"
+            fi
+            claude -p "$prompt" --allowedTools "$allowed_tools" --dangerously-skip-permissions "${EXTRA_AGENT_FLAGS[@]}" >/dev/null 2>&1
+            ;;
+        codex)
+            # shellcheck disable=SC2086
+            codex exec $CODEX_ADDITIONAL_FLAGS -C "$PWD" "${EXTRA_AGENT_FLAGS[@]}" "$prompt" >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+run_claude_provider_iteration() {
     local prompt="$1"
     local flags="$2"
     local error_log="$3"
@@ -1710,6 +1893,7 @@ run_claude_iteration() {
     if [ "$DRY_RUN" = "true" ]; then
         echo "🤖 (DRY RUN) Would run Claude Code with prompt: $prompt" >&2
         echo "📝 (DRY RUN) Output: This is a simulated response from Claude Code." > "$error_log"
+        echo '{"type":"result","is_error":false,"result":"This is a simulated response from Claude Code."}'
         return 0
     fi
 
@@ -1722,7 +1906,8 @@ run_claude_iteration() {
     # Stream stdout (stream-json) to terminal in human-readable format while capturing raw JSON
     # Filter extracts text from assistant messages for display
     set -o pipefail
-    claude -p "$prompt" $flags "${EXTRA_CLAUDE_FLAGS[@]}" 2> >(tee "$temp_stderr" >&2) | \
+    # shellcheck disable=SC2086
+    claude -p "$prompt" $flags "${EXTRA_AGENT_FLAGS[@]}" 2> >(tee "$temp_stderr" >&2) | \
         tee "$temp_stdout" | \
         while IFS= read -r line; do
             # Extract text from assistant messages for human-readable display
@@ -1857,7 +2042,7 @@ run_claude_iteration() {
     fi
     
     # If claude failed, check for error info in both stderr and stdout (JSON)
-    if [ $exit_code -ne 0 ]; then
+    if [ "$exit_code" -ne 0 ]; then
         # If stderr is empty, try to extract error from JSON stdout
         if [ ! -s "$error_log" ] && [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
             # Check if stdout contains JSON with error info (stream-json format)
@@ -1879,19 +2064,146 @@ run_claude_iteration() {
                 echo "  - The command arguments are invalid"
                 echo ""
                 echo "Try running this command directly to see the full error:"
-                echo "  claude -p \"$prompt\" $flags ${EXTRA_CLAUDE_FLAGS[*]}"
+                echo "  claude -p \"$prompt\" $flags ${EXTRA_AGENT_FLAGS[*]}"
             } >> "$error_log"
         fi
         
         # Cleanup temp files after error handling
         rm -f "$temp_stdout" "$temp_stderr"
-        return $exit_code
+        return "$exit_code"
     fi
     
     # Cleanup temp files on success
     rm -f "$temp_stdout" "$temp_stderr"
 
     return 0
+}
+
+run_codex_provider_iteration() {
+    local prompt="$1"
+    local flags="$2"
+    local error_log="$3"
+    local iteration_display="$4"
+
+    if [ "$DRY_RUN" = "true" ]; then
+        echo "🤖 (DRY RUN) Would run Codex CLI with prompt: $prompt" >&2
+        echo "📝 (DRY RUN) Output: This is a simulated response from Codex CLI." > "$error_log"
+        echo '{"type":"item.completed","item":{"type":"agent_message","text":"This is a simulated response from Codex CLI."}}'
+        echo '{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}}'
+        return 0
+    fi
+
+    local temp_stdout=$(mktemp)
+    local temp_stderr=$(mktemp)
+    local exit_code=0
+
+    set -o pipefail
+    # shellcheck disable=SC2086
+    codex exec $flags -C "$PWD" "${EXTRA_AGENT_FLAGS[@]}" "$prompt" 2> >(tee "$temp_stderr" >&2) | \
+        tee "$temp_stdout" | \
+        while IFS= read -r line; do
+            text=$(echo "$line" | jq -r '
+                if .type == "item.completed" and .item.type == "agent_message" then
+                    .item.text // empty
+                else
+                    empty
+                end
+            ' 2>/dev/null)
+            if [ -n "$text" ]; then
+                echo "$text" | while IFS= read -r output_line; do
+                    printf "   %s 💬 %s\n" "$iteration_display" "$output_line" >&2
+                done
+            fi
+
+            tool_info=$(echo "$line" | jq -r --arg pwd "$PWD" '
+                def relpath:
+                    (if startswith($pwd + "/") then .[$pwd | length + 1:] elif . == $pwd then "." else . end) // .;
+                if .type == "item.started" and .item.type == "command_execution" then
+                    "💻 " + ((.item.command // "") | gsub($pwd + "/"; "") | split("\n")[0] | if length > 1000 then .[0:1000] + "..." else . end)
+                elif .type == "item.completed" and .item.type == "command_execution" then
+                    "📤 exit " + ((.item.exit_code // "") | tostring) + ": " + ((.item.command // "") | gsub($pwd + "/"; "") | split("\n")[0] | if length > 1000 then .[0:1000] + "..." else . end)
+                elif .type == "item.completed" and (.item.path? != null) then
+                    "🛠️ " + ((.item.path // "") | relpath)
+                else
+                    empty
+                end
+            ' 2>/dev/null)
+
+            if [ -n "$tool_info" ]; then
+                echo "$tool_info" | while IFS= read -r tool_line; do
+                    printf "   %s %s\n" "$iteration_display" "$tool_line" >&2
+                done
+            fi
+        done
+    exit_code=${PIPESTATUS[0]}
+    set +o pipefail
+
+    wait
+
+    if [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
+        cat "$temp_stdout"
+    fi
+
+    if [ -f "$temp_stderr" ] && [ -s "$temp_stderr" ]; then
+        cat "$temp_stderr" > "$error_log"
+    fi
+
+    if [ "$exit_code" -ne 0 ]; then
+        if [ ! -s "$error_log" ] && [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
+            local json_error
+            json_error=$(cat "$temp_stdout" | jq -s -r '[.[] | select(.type == "error" or .type == "turn.failed") | .message // .error // .] | last // empty' 2>/dev/null || echo "")
+            if [ -n "$json_error" ]; then
+                echo "$json_error" > "$error_log"
+                echo "$json_error" >&2
+            fi
+        fi
+
+        if [ ! -s "$error_log" ]; then
+            {
+                echo "Codex CLI exited with code $exit_code but produced no error output"
+                echo ""
+                echo "This usually means:"
+                echo "  - Codex CLI crashed or failed to start"
+                echo "  - An authentication or permission issue occurred"
+                echo "  - The command arguments are invalid"
+                echo ""
+                echo "Try running this command directly to see the full error:"
+                echo "  codex exec $flags -C \"$PWD\" ${EXTRA_AGENT_FLAGS[*]} \"$prompt\""
+            } >> "$error_log"
+        fi
+
+        rm -f "$temp_stdout" "$temp_stderr"
+        return "$exit_code"
+    fi
+
+    rm -f "$temp_stdout" "$temp_stderr"
+    return 0
+}
+
+run_agent_iteration() {
+    local prompt="$1"
+    local flags="${2:-$(get_agent_default_flags)}"
+    local error_log="$3"
+    local iteration_display="$4"
+
+    : > "$error_log"
+
+    case "$AGENT_PROVIDER" in
+        claude)
+            run_claude_provider_iteration "$prompt" "$flags" "$error_log" "$iteration_display"
+            ;;
+        codex)
+            run_codex_provider_iteration "$prompt" "$flags" "$error_log" "$iteration_display"
+            ;;
+        *)
+            echo "Unsupported provider: $AGENT_PROVIDER" > "$error_log"
+            return 1
+            ;;
+    esac
+}
+
+run_claude_iteration() {
+    run_agent_iteration "$@"
 }
 
 run_reviewer_iteration() {
@@ -1908,29 +2220,35 @@ run_reviewer_iteration() {
 
 ${review_prompt}"
 
-    # Run Claude with the reviewer prompt
+    # Run the selected provider with the reviewer prompt
     local result
-    local claude_exit_code=0
-    result=$(run_claude_iteration "$full_reviewer_prompt" "$ADDITIONAL_FLAGS" "$error_log" "$iteration_display") || claude_exit_code=$?
+    local agent_exit_code=0
+    result=$(run_agent_iteration "$full_reviewer_prompt" "$(get_agent_default_flags)" "$error_log" "$iteration_display") || agent_exit_code=$?
 
-    if [ $claude_exit_code -ne 0 ]; then
-        echo "❌ $iteration_display Reviewer pass failed with exit code: $claude_exit_code" >&2
+    if [ $agent_exit_code -ne 0 ]; then
+        echo "❌ $iteration_display Reviewer pass failed with exit code: $agent_exit_code" >&2
         return 1
     fi
 
     # Parse and validate the result
-    local parse_result=$(parse_claude_result "$result")
-    if [ "$?" != "0" ]; then
+    local parse_result
+    if ! parse_result=$(parse_agent_result "$result"); then
         echo "❌ $iteration_display Reviewer pass returned error: $parse_result" >&2
         return 1
     fi
 
-    # Extract and accumulate cost from reviewer (stream-json format)
-    local reviewer_cost=$(echo "$result" | jq -s -r '.[-1].total_cost_usd // empty')
+    local reviewer_cost
+    reviewer_cost=$(extract_agent_cost "$result")
     if [ -n "$reviewer_cost" ]; then
         printf "💰 $iteration_display Reviewer cost: \$%.3f\n" "$reviewer_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $reviewer_cost}")
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
+    fi
+
+    local usage_summary
+    usage_summary=$(extract_agent_usage_summary "$result")
+    if [ -n "$usage_summary" ]; then
+        echo "   $usage_summary" >&2
     fi
 
     echo "✅ $iteration_display Reviewer pass completed" >&2
@@ -1976,32 +2294,38 @@ run_ci_fix_iteration() {
 4. After making changes, stage, commit, AND PUSH them with a clear commit message describing the fix
 5. You MUST push the changes to trigger a new CI run"
 
-    # Run Claude with the CI fix prompt
+    # Run the selected provider with the CI fix prompt
     local result
-    local claude_exit_code=0
-    result=$(run_claude_iteration "$ci_fix_prompt" "$ADDITIONAL_FLAGS" "$error_log" "$iteration_display") || claude_exit_code=$?
+    local agent_exit_code=0
+    result=$(run_agent_iteration "$ci_fix_prompt" "$(get_agent_default_flags)" "$error_log" "$iteration_display") || agent_exit_code=$?
 
-    if [ $claude_exit_code -ne 0 ]; then
-        echo "❌ $iteration_display CI fix attempt failed with exit code: $claude_exit_code" >&2
+    if [ $agent_exit_code -ne 0 ]; then
+        echo "❌ $iteration_display CI fix attempt failed with exit code: $agent_exit_code" >&2
         return 1
     fi
 
     # Parse and validate the result
-    local parse_result=$(parse_claude_result "$result")
-    if [ "$?" != "0" ]; then
+    local parse_result
+    if ! parse_result=$(parse_agent_result "$result"); then
         echo "❌ $iteration_display CI fix returned error: $parse_result" >&2
         return 1
     fi
 
-    # Extract and accumulate cost from CI fix (stream-json format)
-    local fix_cost=$(echo "$result" | jq -s -r '.[-1].total_cost_usd // empty')
+    local fix_cost
+    fix_cost=$(extract_agent_cost "$result")
     if [ -n "$fix_cost" ]; then
         printf "💰 $iteration_display CI fix cost: \$%.3f\n" "$fix_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $fix_cost}")
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
-    # Claude was instructed to commit and push the fix
+    local usage_summary
+    usage_summary=$(extract_agent_usage_summary "$result")
+    if [ -n "$usage_summary" ]; then
+        echo "   $usage_summary" >&2
+    fi
+
+    # The selected provider was instructed to commit and push the fix
     # The caller will check CI status to determine if the fix worked
     echo "✅ $iteration_display CI fix iteration completed, checking CI status..." >&2
     return 0
@@ -2018,7 +2342,7 @@ attempt_ci_fix_and_recheck() {
 
     local retry_attempt=1
 
-    while [ $retry_attempt -le $CI_RETRY_MAX_ATTEMPTS ]; do
+    while [ "$retry_attempt" -le "$CI_RETRY_MAX_ATTEMPTS" ]; do
         # Run CI fix iteration
         if ! run_ci_fix_iteration "$iteration_display" "$pr_number" "$owner" "$repo" "$branch_name" "$error_log" "$retry_attempt"; then
             echo "⚠️  $iteration_display CI fix attempt $retry_attempt failed" >&2
@@ -2073,29 +2397,35 @@ run_comment_fix_iteration() {
 5. After making changes, stage, commit, AND PUSH them with a clear commit message describing what comments you addressed
 6. You MUST push the changes to update the PR"
 
-    # Run Claude with the comment review prompt
+    # Run the selected provider with the comment review prompt
     local result
-    local claude_exit_code=0
-    result=$(run_claude_iteration "$comment_review_prompt" "$ADDITIONAL_FLAGS" "$error_log" "$iteration_display") || claude_exit_code=$?
+    local agent_exit_code=0
+    result=$(run_agent_iteration "$comment_review_prompt" "$(get_agent_default_flags)" "$error_log" "$iteration_display") || agent_exit_code=$?
 
-    if [ $claude_exit_code -ne 0 ]; then
-        echo "❌ $iteration_display Comment review attempt failed with exit code: $claude_exit_code" >&2
+    if [ $agent_exit_code -ne 0 ]; then
+        echo "❌ $iteration_display Comment review attempt failed with exit code: $agent_exit_code" >&2
         return 1
     fi
 
     # Parse and validate the result
-    local parse_result=$(parse_claude_result "$result")
-    if [ "$?" != "0" ]; then
+    local parse_result
+    if ! parse_result=$(parse_agent_result "$result"); then
         echo "❌ $iteration_display Comment review returned error: $parse_result" >&2
         return 1
     fi
 
-    # Extract and accumulate cost from comment review (stream-json format)
-    local fix_cost=$(echo "$result" | jq -s -r '.[-1].total_cost_usd // empty')
+    local fix_cost
+    fix_cost=$(extract_agent_cost "$result")
     if [ -n "$fix_cost" ]; then
         printf "💰 $iteration_display Comment review cost: \$%.3f\n" "$fix_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $fix_cost}")
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
+    fi
+
+    local usage_summary
+    usage_summary=$(extract_agent_usage_summary "$result")
+    if [ -n "$usage_summary" ]; then
+        echo "   $usage_summary" >&2
     fi
 
     echo "✅ $iteration_display Comment review iteration completed" >&2
@@ -2113,7 +2443,7 @@ attempt_comment_fix_and_recheck() {
 
     local retry_attempt=1
 
-    while [ $retry_attempt -le $COMMENT_REVIEW_MAX_ATTEMPTS ]; do
+    while [ "$retry_attempt" -le "$COMMENT_REVIEW_MAX_ATTEMPTS" ]; do
         # Run comment fix iteration
         if ! run_comment_fix_iteration "$iteration_display" "$pr_number" "$owner" "$repo" "$branch_name" "$error_log" "$retry_attempt"; then
             echo "⚠️  $iteration_display Comment review attempt $retry_attempt failed, proceeding to merge" >&2
@@ -2140,23 +2470,124 @@ attempt_comment_fix_and_recheck() {
     return 1
 }
 
-parse_claude_result() {
+parse_agent_result() {
     local result="$1"
     
-    # For stream-json format: validate by slurping and checking last element
     if ! echo "$result" | jq -s -e '.[-1]' >/dev/null 2>&1; then
         echo "invalid_json"
         return 1
     fi
 
-    local is_error=$(echo "$result" | jq -s -r '.[-1].is_error // false')
-    if [ "$is_error" = "true" ]; then
-        echo "claude_error"
-        return 1
-    fi
+    case "$AGENT_PROVIDER" in
+        claude)
+            local is_error
+            is_error=$(echo "$result" | jq -s -r '.[-1].is_error // false')
+            if [ "$is_error" = "true" ]; then
+                echo "claude_error"
+                return 1
+            fi
+            ;;
+        codex)
+            local has_error
+            has_error=$(echo "$result" | jq -s -r 'any(.[]; .type == "error" or .type == "turn.failed")')
+            if [ "$has_error" = "true" ]; then
+                echo "codex_error"
+                return 1
+            fi
+
+            local has_completed_turn
+            has_completed_turn=$(echo "$result" | jq -s -r 'any(.[]; .type == "turn.completed")')
+            if [ "$has_completed_turn" != "true" ]; then
+                echo "codex_incomplete"
+                return 1
+            fi
+            ;;
+    esac
     
     echo "success"
     return 0
+}
+
+parse_claude_result() {
+    parse_agent_result "$@"
+}
+
+extract_agent_result_text() {
+    local result="$1"
+
+    case "$AGENT_PROVIDER" in
+        claude)
+            echo "$result" | jq -s -r '.[-1].result // empty'
+            ;;
+        codex)
+            echo "$result" | jq -s -r '[.[] | select(.type == "item.completed" and .item.type == "agent_message") | .item.text // empty] | join("\n")'
+            ;;
+    esac
+}
+
+extract_agent_cost() {
+    local result="$1"
+
+    case "$AGENT_PROVIDER" in
+        claude)
+            echo "$result" | jq -s -r '.[-1].total_cost_usd // empty'
+            ;;
+        codex)
+            if [ -z "$CODEX_INPUT_COST_PER_MILLION" ] || [ -z "$CODEX_OUTPUT_COST_PER_MILLION" ]; then
+                echo ""
+                return 0
+            fi
+
+            local input_tokens cached_input_tokens output_tokens
+            input_tokens=$(echo "$result" | jq -s -r '[.[] | select(.type == "turn.completed")][-1].usage.input_tokens // empty')
+            cached_input_tokens=$(echo "$result" | jq -s -r '[.[] | select(.type == "turn.completed")][-1].usage.cached_input_tokens // 0')
+            output_tokens=$(echo "$result" | jq -s -r '[.[] | select(.type == "turn.completed")][-1].usage.output_tokens // empty')
+
+            if [ -z "$input_tokens" ] || [ -z "$output_tokens" ]; then
+                echo ""
+                return 0
+            fi
+
+            local cached_rate="$CODEX_CACHED_INPUT_COST_PER_MILLION"
+            if [ -z "$cached_rate" ]; then
+                cached_rate="$CODEX_INPUT_COST_PER_MILLION"
+            fi
+
+            awk \
+                -v input="$input_tokens" \
+                -v cached="$cached_input_tokens" \
+                -v output="$output_tokens" \
+                -v input_rate="$CODEX_INPUT_COST_PER_MILLION" \
+                -v cached_rate="$cached_rate" \
+                -v output_rate="$CODEX_OUTPUT_COST_PER_MILLION" \
+                'BEGIN {
+                    uncached = input - cached;
+                    if (uncached < 0) uncached = 0;
+                    cost = ((uncached * input_rate) + (cached * cached_rate) + (output * output_rate)) / 1000000;
+                    printf "%.6f", cost;
+                }'
+            ;;
+    esac
+}
+
+extract_agent_usage_summary() {
+    local result="$1"
+
+    if [ "$AGENT_PROVIDER" != "codex" ]; then
+        echo ""
+        return 0
+    fi
+
+    echo "$result" | jq -s -r '
+        [.[] | select(.type == "turn.completed")][-1].usage as $usage |
+        if $usage then
+            "Tokens: input " + (($usage.input_tokens // 0) | tostring) +
+            ", cached input " + (($usage.cached_input_tokens // 0) | tostring) +
+            ", output " + (($usage.output_tokens // 0) | tostring)
+        else
+            empty
+        end
+    '
 }
 
 handle_iteration_error() {
@@ -2195,9 +2626,23 @@ handle_iteration_error() {
             echo "$error_output" | jq -s -r '.[-1].result // .[-1] // empty' >&2
             echo "" >&2
             ;;
+        "codex_error")
+            echo "" >&2
+            echo "❌ $iteration_display Error in Codex CLI response ($error_count consecutive errors):" >&2
+            echo "" >&2
+            echo "$error_output" | jq -s -r '[.[] | select(.type == "error" or .type == "turn.failed") | .message // .error // .] | last // empty' >&2
+            echo "" >&2
+            ;;
+        "codex_incomplete")
+            echo "" >&2
+            echo "❌ $iteration_display Error: Codex CLI response did not include a completed turn ($error_count consecutive errors)" >&2
+            echo "" >&2
+            echo "$error_output" >&2
+            echo "" >&2
+            ;;
     esac
     
-    if [ $error_count -ge 3 ]; then
+    if [ "$error_count" -ge 3 ]; then
         echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
         exit 1
     fi
@@ -2211,9 +2656,8 @@ handle_iteration_success() {
     local branch_name="$3"
     local main_branch="$4"
     
-    # For stream-json format: slurp newline-delimited JSON and get result from last object
-    # (Output already displayed in real-time via streaming)
-    local result_text=$(echo "$result" | jq -s -r '.[-1].result // empty')
+    local result_text
+    result_text=$(extract_agent_result_text "$result")
 
     # Check for completion signal in the output
     if [ -n "$result_text" ] && [[ "$result_text" == *"$COMPLETION_SIGNAL"* ]]; then
@@ -2221,20 +2665,26 @@ handle_iteration_success() {
         echo "" >&2
         echo "🎯 $iteration_display Completion signal detected ($completion_signal_count/$COMPLETION_THRESHOLD)" >&2
     else
-        if [ $completion_signal_count -gt 0 ]; then
+        if [ "$completion_signal_count" -gt 0 ]; then
             echo "" >&2
             echo "🔄 $iteration_display Completion signal not found, resetting counter" >&2
         fi
         completion_signal_count=0
     fi
 
-    # For stream-json format: slurp and get cost from last object
-    local cost=$(echo "$result" | jq -s -r '.[-1].total_cost_usd // empty')
+    local cost
+    cost=$(extract_agent_cost "$result")
     if [ -n "$cost" ]; then
         echo "" >&2
         printf "💰 $iteration_display Iteration cost: \$%.3f\n" "$cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $cost}")
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
+    fi
+
+    local usage_summary
+    usage_summary=$(extract_agent_usage_summary "$result")
+    if [ -n "$usage_summary" ]; then
+        echo "   $usage_summary" >&2
     fi
 
     echo "✅ $iteration_display Work completed" >&2
@@ -2245,7 +2695,7 @@ handle_iteration_success() {
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
                 echo "❌ $iteration_display Commit failed ($error_count consecutive errors)" >&2
-                if [ $error_count -ge 3 ]; then
+                if [ "$error_count" -ge 3 ]; then
                     echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
                     exit 1
                 fi
@@ -2257,7 +2707,7 @@ handle_iteration_success() {
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
                 echo "❌ $iteration_display PR merge queue failed ($error_count consecutive errors)" >&2
-                if [ $error_count -ge 3 ]; then
+                if [ "$error_count" -ge 3 ]; then
                     echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
                     exit 1
                 fi
@@ -2274,7 +2724,7 @@ handle_iteration_success() {
     fi
     
     error_count=0
-    if [ $extra_iterations -gt 0 ]; then
+    if [ "$extra_iterations" -gt 0 ]; then
         extra_iterations=$((extra_iterations - 1))
     fi
     successful_iterations=$((successful_iterations + 1))
@@ -2284,16 +2734,17 @@ handle_iteration_success() {
 execute_single_iteration() {
     local iteration_num=$1
     
-    local iteration_display=$(get_iteration_display $iteration_num $MAX_RUNS $extra_iterations)
+    local iteration_display
+    iteration_display=$(get_iteration_display "$iteration_num" "${MAX_RUNS:-0}" "$extra_iterations")
     echo "🔄 $iteration_display Starting iteration..." >&2
 
     # Get current branch and create iteration branch
-    local main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    local main_branch
+    main_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
     local branch_name=""
     
     if [ "$ENABLE_COMMITS" = "true" ] && [ "$DISABLE_BRANCHES" != "true" ]; then
-        branch_name=$(create_iteration_branch "$iteration_display" "$iteration_num")
-        if [ $? -ne 0 ] || [ -z "$branch_name" ]; then
+        if ! branch_name=$(create_iteration_branch "$iteration_display" "$iteration_num") || [ -z "$branch_name" ]; then
             if git rev-parse --git-dir > /dev/null 2>&1; then
                 echo "❌ $iteration_display Failed to create branch" >&2
                 handle_iteration_error "$iteration_display" "exit_code" ""
@@ -2327,22 +2778,24 @@ $notes_content
 "
     
     if [ -f "$NOTES_FILE" ]; then
-        enhanced_prompt+="$PROMPT_NOTES_UPDATE_EXISTING"
+        enhanced_prompt+="$(render_notes_prompt "$PROMPT_NOTES_UPDATE_EXISTING")"
     else
-        enhanced_prompt+="$PROMPT_NOTES_CREATE_NEW"
+        enhanced_prompt+="$(render_notes_prompt "$PROMPT_NOTES_CREATE_NEW")"
     fi
     
     enhanced_prompt+="$PROMPT_NOTES_GUIDELINES"
 
-    echo "🤖 $iteration_display Running Claude Code..." >&2
+    local agent_display
+    agent_display=$(get_agent_display_name)
+    echo "🤖 $iteration_display Running $agent_display..." >&2
     
     local result
-    local claude_exit_code=0
-    result=$(run_claude_iteration "$enhanced_prompt" "$ADDITIONAL_FLAGS" "$ERROR_LOG" "$iteration_display") || claude_exit_code=$?
+    local agent_exit_code=0
+    result=$(run_agent_iteration "$enhanced_prompt" "$(get_agent_default_flags)" "$ERROR_LOG" "$iteration_display") || agent_exit_code=$?
     
-    if [ $claude_exit_code -ne 0 ]; then
+    if [ "$agent_exit_code" -ne 0 ]; then
         echo "" >&2
-        echo "⚠️  Claude Code command failed with exit code: $claude_exit_code" >&2
+        echo "⚠️  $agent_display command failed with exit code: $agent_exit_code" >&2
         # Clean up branch on error
         if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
             git checkout "$main_branch" >/dev/null 2>&1
@@ -2352,8 +2805,8 @@ $notes_content
         return 1
     fi
     
-    local parse_result=$(parse_claude_result "$result")
-    if [ "$?" != "0" ]; then
+    local parse_result
+    if ! parse_result=$(parse_agent_result "$result"); then
         # Clean up branch on error
         if [ -n "$branch_name" ] && git rev-parse --git-dir > /dev/null 2>&1; then
             git checkout "$main_branch" >/dev/null 2>&1
@@ -2375,7 +2828,7 @@ $notes_content
             # Count as an error for consecutive error tracking
             error_count=$((error_count + 1))
             extra_iterations=$((extra_iterations + 1))
-            if [ $error_count -ge 3 ]; then
+            if [ "$error_count" -ge 3 ]; then
                 echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
                 exit 1
             fi
@@ -2398,7 +2851,7 @@ main_loop() {
         local should_continue=false
         
         # Continue if MAX_RUNS is not set or not reached
-        if [ -z "$MAX_RUNS" ] || [ "$MAX_RUNS" -eq 0 ] || [ $successful_iterations -lt $MAX_RUNS ]; then
+        if [ -z "$MAX_RUNS" ] || [ "$MAX_RUNS" -eq 0 ] || [ "$successful_iterations" -lt "$MAX_RUNS" ]; then
             should_continue=true
         fi
         
@@ -2411,7 +2864,7 @@ main_loop() {
         if [ -n "$MAX_DURATION" ] && [ -n "$start_time" ]; then
             local current_time=$(date +%s)
             local elapsed_time=$((current_time - start_time))
-            if [ $elapsed_time -ge $MAX_DURATION ]; then
+            if [ "$elapsed_time" -ge "$MAX_DURATION" ]; then
                 echo "" >&2
                 echo "⏱️  Maximum duration reached ($(format_duration $elapsed_time))" >&2
                 should_continue=false
@@ -2419,12 +2872,12 @@ main_loop() {
         fi
         
         # If both limits are set and both are reached, stop
-        if [ -n "$MAX_RUNS" ] && [ "$MAX_RUNS" -ne 0 ] && [ $successful_iterations -ge $MAX_RUNS ]; then
+        if [ -n "$MAX_RUNS" ] && [ "$MAX_RUNS" -ne 0 ] && [ "$successful_iterations" -ge "$MAX_RUNS" ]; then
             should_continue=false
         fi
         
         # Stop if completion signal threshold reached
-        if [ $completion_signal_count -ge $COMPLETION_THRESHOLD ]; then
+        if [ "$completion_signal_count" -ge "$COMPLETION_THRESHOLD" ]; then
             echo "" >&2
             echo "🎉 Project completion signal detected $completion_signal_count times consecutively!" >&2
             should_continue=false
@@ -2451,13 +2904,13 @@ show_completion_summary() {
     fi
     
     # Show completion signal message if that's why we stopped
-    if [ $completion_signal_count -ge $COMPLETION_THRESHOLD ]; then
+    if [ "$completion_signal_count" -ge "$COMPLETION_THRESHOLD" ]; then
         if [ -n "$total_cost" ] && [ "$(awk "BEGIN {print ($total_cost > 0)}")" = "1" ]; then
             printf "✨ Project completed! Detected completion signal %d times in a row. Total cost: \$%.3f%s\n" "$completion_signal_count" "$total_cost" "$elapsed_msg"
         else
             printf "✨ Project completed! Detected completion signal %d times in a row.%s\n" "$completion_signal_count" "$elapsed_msg"
         fi
-    elif [ -n "$MAX_RUNS" ] && [ $MAX_RUNS -ne 0 ] || [ -n "$MAX_COST" ] || [ -n "$MAX_DURATION" ]; then
+    elif { [ -n "$MAX_RUNS" ] && [ "$MAX_RUNS" -ne 0 ]; } || [ -n "$MAX_COST" ] || [ -n "$MAX_DURATION" ]; then
         if [ -n "$total_cost" ] && [ "$(awk "BEGIN {print ($total_cost > 0)}")" = "1" ]; then
             printf "🎉 Done with total cost: \$%.3f%s\n" "$total_cost" "$elapsed_msg"
         else 
@@ -2472,7 +2925,6 @@ main() {
         shift
         parse_update_flags "$@"
         handle_update_command
-        exit 0
     fi
     
     parse_arguments "$@"
@@ -2491,7 +2943,7 @@ main() {
     setup_worktree
     
     ERROR_LOG=$(mktemp)
-    trap "rm -f $ERROR_LOG; cleanup_worktree" EXIT
+    trap 'rm -f "$ERROR_LOG"; cleanup_worktree' EXIT
     
     main_loop
     show_completion_summary

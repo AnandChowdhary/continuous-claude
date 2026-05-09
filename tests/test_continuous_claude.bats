@@ -50,6 +50,23 @@ setup() {
     assert_equal "$DRY_RUN" "true"
 }
 
+@test "parse_arguments handles provider flag" {
+    source "$SCRIPT_PATH"
+    parse_arguments --provider codex
+
+    assert_equal "$AGENT_PROVIDER" "codex"
+}
+
+@test "parse_arguments forwards provider flags after separator" {
+    source "$SCRIPT_PATH"
+    parse_arguments --provider codex -p "test" -m 1 -- --model gpt-5.5
+
+    assert_equal "$AGENT_PROVIDER" "codex"
+    assert_equal "${EXTRA_AGENT_FLAGS[0]}" "--model"
+    assert_equal "${EXTRA_AGENT_FLAGS[1]}" "gpt-5.5"
+    assert_equal "${EXTRA_CLAUDE_FLAGS[0]}" "--model"
+}
+
 @test "parse_arguments handles auto-update flag" {
     source "$SCRIPT_PATH"
     AUTO_UPDATE="false"
@@ -64,6 +81,16 @@ setup() {
     parse_arguments --disable-updates
     
     assert_equal "$DISABLE_UPDATES" "true"
+}
+
+@test "render_notes_prompt uses current notes-file value" {
+    source "$SCRIPT_PATH"
+    NOTES_FILE="CUSTOM_NOTES.md"
+
+    run render_notes_prompt "$PROMPT_NOTES_CREATE_NEW"
+
+    assert_success
+    assert_output 'Create a `CUSTOM_NOTES.md` file with relevant context and instructions for the next iteration.'
 }
 
 @test "validate_arguments fails without prompt" {
@@ -93,6 +120,59 @@ setup() {
     GITHUB_REPO="repo"
     run validate_arguments
     assert_success
+}
+
+@test "validate_arguments fails with invalid provider" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="invalid"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --provider must be one of: claude, codex"
+}
+
+@test "validate_arguments requires Codex token rates for max-cost" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    PROMPT="test"
+    MAX_COST="5.00"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Codex CLI does not report USD cost"
+}
+
+@test "validate_arguments accepts Codex max-cost with token rates" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    PROMPT="test"
+    MAX_COST="5.00"
+    CODEX_INPUT_COST_PER_MILLION="1.25"
+    CODEX_OUTPUT_COST_PER_MILLION="10.00"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+
+    run validate_arguments
+    assert_success
+}
+
+@test "validate_arguments limits cost-only dry runs to one iteration" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_COST="5.00"
+    DRY_RUN="true"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+
+    validate_arguments
+
+    assert_equal "$MAX_RUNS" "1"
 }
 
 @test "dry run mode skips execution" {
@@ -140,6 +220,23 @@ setup() {
     
     assert_failure
     assert_output --partial "Error: Claude Code is not installed"
+}
+
+@test "validate_requirements fails when codex is missing for codex provider" {
+    function command() {
+        if [ "$2" == "codex" ]; then
+            return 1
+        fi
+        return 0
+    }
+    export -f command
+
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    run validate_requirements
+
+    assert_failure
+    assert_output --partial "Error: Codex CLI is not installed"
 }
 
 @test "validate_requirements fails when jq is missing" {
@@ -232,6 +329,76 @@ setup() {
     run parse_claude_result '{"is_error": true, "result": "error message"}'
     assert_failure
     assert_output "claude_error"
+}
+
+@test "parse_agent_result handles Codex success JSONL" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    local result='{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20}}'
+
+    run parse_agent_result "$result"
+    assert_success
+    assert_output "success"
+}
+
+@test "parse_agent_result handles Codex error JSONL" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    local result='{"type":"thread.started","thread_id":"abc"}
+{"type":"error","message":"authentication failed"}'
+
+    run parse_agent_result "$result"
+    assert_failure
+    assert_output "codex_error"
+}
+
+@test "parse_agent_result handles Codex incomplete JSONL" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    local result='{"type":"thread.started","thread_id":"abc"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"done"}}'
+
+    run parse_agent_result "$result"
+    assert_failure
+    assert_output "codex_incomplete"
+}
+
+@test "extract_agent_result_text handles Codex agent messages" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    local result='{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"first"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"second"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}'
+
+    run extract_agent_result_text "$result"
+    assert_success
+    assert_output $'first\nsecond'
+}
+
+@test "extract_agent_cost estimates Codex cost from usage and token rates" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    CODEX_INPUT_COST_PER_MILLION="1.00"
+    CODEX_CACHED_INPUT_COST_PER_MILLION="0.10"
+    CODEX_OUTPUT_COST_PER_MILLION="10.00"
+    local result='{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100}}'
+
+    run extract_agent_cost "$result"
+    assert_success
+    assert_output "0.001820"
+}
+
+@test "extract_agent_usage_summary shows Codex token usage" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+    local result='{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100}}'
+
+    run extract_agent_usage_summary "$result"
+    assert_success
+    assert_output "Tokens: input 1000, cached input 200, output 100"
 }
 
 @test "create_iteration_branch generates correct branch name" {
@@ -408,6 +575,29 @@ setup() {
     assert_output --partial "Completion signal detected (1/3)"
 }
 
+@test "completion signal detection works for Codex agent messages" {
+    source "$SCRIPT_PATH"
+
+    AGENT_PROVIDER="codex"
+    completion_signal_count=0
+    total_cost=0
+    COMPLETION_SIGNAL="PROJECT_DONE"
+    COMPLETION_THRESHOLD=2
+    ENABLE_COMMITS="false"
+
+    local result='{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"All finished PROJECT_DONE"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}'
+
+    function git() { return 0; }
+    export -f git
+
+    run handle_iteration_success "(1/2)" "$result" "" "main"
+
+    assert_success
+    assert_output --partial "Completion signal detected (1/2)"
+    assert_output --partial "Tokens: input 100, cached input 0, output 20"
+}
+
 @test "show_completion_summary shows signal message" {
     source "$SCRIPT_PATH"
     
@@ -563,6 +753,108 @@ setup() {
     fi
     
     rm -f "$error_log"
+}
+
+@test "run_agent_iteration executes Codex provider and returns JSONL" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+
+    function codex() {
+        if [ "$1" != "exec" ]; then
+            echo "expected codex exec" >&2
+            return 1
+        fi
+        echo '{"type":"thread.started","thread_id":"abc"}'
+        echo '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"hello from codex"}}'
+        echo '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}'
+        return 0
+    }
+    export -f codex
+
+    local error_log=$(mktemp)
+    local display_log=$(mktemp)
+    local result
+    result=$(run_agent_iteration "test prompt" "$CODEX_ADDITIONAL_FLAGS" "$error_log" "(1/1)" 2>"$display_log")
+
+    run parse_agent_result "$result"
+    assert_success
+    assert_output "success"
+
+    run extract_agent_result_text "$result"
+    assert_success
+    assert_output "hello from codex"
+
+    assert [ ! -s "$error_log" ]
+    assert grep -q "hello from codex" "$display_log"
+
+    rm -f "$error_log" "$display_log"
+}
+
+@test "run_agent_iteration captures Codex stderr to error log" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+
+    function codex() {
+        echo "Codex auth failed" >&2
+        return 1
+    }
+    export -f codex
+
+    local error_log=$(mktemp)
+
+    run run_agent_iteration "test prompt" "$CODEX_ADDITIONAL_FLAGS" "$error_log" "(1/1)"
+
+    assert_failure
+    assert [ -s "$error_log" ]
+    local error_content=$(cat "$error_log")
+    assert_equal "$error_content" "Codex auth failed"
+
+    rm -f "$error_log"
+}
+
+@test "run_agent_iteration clears stale Codex error log before JSON error extraction" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+
+    function codex() {
+        echo '{"type":"error","message":"Fresh Codex JSON failure"}'
+        return 1
+    }
+    export -f codex
+
+    local error_log=$(mktemp)
+    echo "stale previous error" > "$error_log"
+
+    run run_agent_iteration "test prompt" "$CODEX_ADDITIONAL_FLAGS" "$error_log" "(1/1)"
+
+    assert_failure
+    assert [ -s "$error_log" ]
+    local error_content=$(cat "$error_log")
+    assert_equal "$error_content" "Fresh Codex JSON failure"
+
+    rm -f "$error_log"
+}
+
+@test "run_agent_prompt_quiet uses Codex provider" {
+    source "$SCRIPT_PATH"
+    AGENT_PROVIDER="codex"
+
+    local args_file="$BATS_TEST_TMPDIR/codex_args"
+    function codex() {
+        printf '%s\n' "$@" > "$args_file"
+        return 0
+    }
+    export -f codex
+    export args_file
+
+    run run_agent_prompt_quiet "commit please"
+
+    assert_success
+    assert [ -f "$args_file" ]
+    run grep -q "exec" "$args_file"
+    assert_success
+    run grep -q "commit please" "$args_file"
+    assert_success
 }
 
 @test "get_latest_version returns version when gh is available" {
@@ -1896,6 +2188,52 @@ setup() {
     # Should succeed because --ignore-submodules=dirty allows dirty submodules
     assert_success
     assert_output --partial "Committed: Test commit"
+}
+
+@test "commit_on_current_branch uses Codex provider when selected" {
+    source "$SCRIPT_PATH"
+
+    AGENT_PROVIDER="codex"
+    DRY_RUN="false"
+    local commit_flag="$BATS_TEST_TMPDIR/codex_commit_called"
+    rm -f "$commit_flag"
+    export commit_flag
+
+    function git() {
+        case "$1 $2 $3 $4 $5" in
+            "rev-parse --git-dir"*)
+                return 0
+                ;;
+            "diff --quiet"*)
+                return 0
+                ;;
+            "diff --cached --quiet"*)
+                return 0
+                ;;
+            "ls-files --others"*)
+                if [ ! -f "$commit_flag" ]; then
+                    echo "newfile.txt"
+                fi
+                ;;
+            "log -1 --format=%s"*)
+                echo "Codex commit"
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+
+    function codex() {
+        touch "$commit_flag"
+        return 0
+    }
+    export -f codex
+
+    run commit_on_current_branch "(1/1)"
+
+    assert_success
+    assert_output --partial "Committed: Codex commit"
+    assert [ -f "$commit_flag" ]
 }
 
 # =========================================

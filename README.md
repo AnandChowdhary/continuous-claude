@@ -60,9 +60,9 @@ The model mirrors human development practices. Claude Code handles the grunt wor
 
 ## ⚙️ How it works
 
-Using Claude Code to drive iterative development, this script fully automates the PR lifecycle from code changes through to merged commits:
+Using Claude Code or Codex CLI to drive iterative development, this script fully automates the PR lifecycle from code changes through to merged commits:
 
-- Claude Code runs in a loop based on your prompt
+- The selected AI coding agent runs in a loop based on your prompt
 - All changes are committed to a new branch
 - A new pull request is created
 - It waits for all required PR checks and code reviews to complete
@@ -114,7 +114,9 @@ sudo rm /usr/local/bin/continuous-claude
 
 Before using `continuous-claude`, you need:
 
-1. **[Claude Code CLI](https://code.claude.com)** - Authenticate with `claude auth`
+1. **An AI coding agent CLI**:
+   - **[Claude Code CLI](https://code.claude.com)** - Authenticate with `claude auth`
+   - **[Codex CLI](https://help.openai.com/en/articles/11096431)** - Authenticate with `codex login`
 2. **[GitHub CLI](https://cli.github.com)** - Authenticate with `gh auth login`
 3. **jq** - Install with `brew install jq` (macOS) or `apt-get install jq` (Linux)
 
@@ -123,6 +125,9 @@ Before using `continuous-claude`, you need:
 ```bash
 # Run with your prompt, max runs, and GitHub repo (owner and repo auto-detected from git remote)
 continuous-claude --prompt "add unit tests until all code is covered" --max-runs 5
+
+# Run the same loop with Codex CLI instead of Claude Code
+continuous-claude --provider codex --prompt "add unit tests until all code is covered" --max-runs 5
 
 # Or explicitly specify the owner and repo
 continuous-claude --prompt "add unit tests until all code is covered" --max-runs 5 --owner AnandChowdhary --repo continuous-claude
@@ -136,10 +141,14 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 
 ## 🎯 Flags
 
-- `-p, --prompt`: Task prompt for Claude Code (required)
+- `-p, --prompt`: Task prompt for the selected AI coding agent (required)
+- `--provider`: AI coding provider, either `claude` or `codex` (default: `claude`)
 - `-m, --max-runs`: Maximum number of iterations, use `0` for infinite (required unless --max-cost or --max-duration is provided)
 - `--max-cost`: Maximum USD to spend (required unless --max-runs or --max-duration is provided)
 - `--max-duration`: Maximum duration to run (e.g., `2h`, `30m`, `1h30m`) (required unless --max-runs or --max-cost is provided)
+- `--codex-input-cost-per-million`: Input token rate used to estimate Codex cost budgets
+- `--codex-output-cost-per-million`: Output token rate used to estimate Codex cost budgets
+- `--codex-cached-input-cost-per-million`: Cached input token rate used to estimate Codex cost budgets (defaults to input rate)
 - `--owner`: GitHub repository owner (auto-detected from git remote if not provided)
 - `--repo`: GitHub repository name (auto-detected from git remote if not provided)
 - `--merge-strategy`: Merge strategy: `squash`, `merge`, or `rebase` (default: `squash`)
@@ -156,7 +165,9 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 - `--completion-threshold <num>`: Number of consecutive completion signals required to stop early (default: `3`)
 - `-r, --review-prompt`: Run a reviewer pass after each iteration to validate changes (e.g., run build/lint/tests and fix any issues)
 
-Any additional flags you provide that are not recognized by `continuous-claude` will be automatically forwarded to the underlying `claude` command. For example, you can pass `--allowedTools`, `--model`, or any other Claude Code CLI flags.
+Any additional flags you provide that are not recognized by `continuous-claude` will be automatically forwarded to the selected provider command. You can also use `--` to explicitly stop parsing `continuous-claude` options and forward the rest to the provider CLI.
+
+Codex CLI currently reports token usage but not USD cost. When using `--provider codex` with `--max-cost`, provide explicit token rates with `--codex-input-cost-per-million` and `--codex-output-cost-per-million` so `continuous-claude` can enforce the budget from Codex usage events.
 
 ## 📝 Examples
 
@@ -164,11 +175,18 @@ Any additional flags you provide that are not recognized by `continuous-claude` 
 # Run 5 iterations (owner and repo auto-detected from git remote)
 continuous-claude -p "improve code quality" -m 5
 
+# Run 5 iterations with Codex CLI
+continuous-claude --provider codex -p "improve code quality" -m 5
+
 # Run infinitely until stopped
 continuous-claude -p "add unit tests until all code is covered" -m 0
 
 # Run until $10 budget exhausted
 continuous-claude -p "add documentation" --max-cost 10.00
+
+# Run Codex until a $10 estimated budget is exhausted
+continuous-claude --provider codex -p "add documentation" --max-cost 10.00 \
+  --codex-input-cost-per-million 1.25 --codex-output-cost-per-million 10.00
 
 # Run for 2 hours (time-boxed burst)
 continuous-claude -p "add unit tests" --max-duration 2h
@@ -205,6 +223,9 @@ continuous-claude -p "quick fixes" -m 3 --disable-branches
 
 # Pass additional Claude Code CLI flags (e.g., restrict tools)
 continuous-claude -p "add features" -m 3 --allowedTools "Write,Read"
+
+# Pass additional Codex CLI flags after --
+continuous-claude --provider codex -p "add features" -m 3 -- --model gpt-5.5
 
 # Use a different model
 continuous-claude -p "refactor code" -m 5 --model claude-haiku-4-5
