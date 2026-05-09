@@ -3,7 +3,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$script:Version = "v0.24.6"
+$script:Version = "v0.24.7"
 $script:ClaudeFlags = @("--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose")
 $script:CodexFlags = @("--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check")
 
