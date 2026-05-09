@@ -67,6 +67,29 @@ setup() {
     assert_equal "${EXTRA_CLAUDE_FLAGS[0]}" "--model"
 }
 
+@test "parse_arguments handles review prompt value" {
+    source "$SCRIPT_PATH"
+    parse_arguments -r "Run tests and lint"
+
+    assert_equal "$REVIEW_PROMPT" "Run tests and lint"
+}
+
+@test "parse_arguments uses default review prompt when -r has no value" {
+    source "$SCRIPT_PATH"
+    parse_arguments -p "test" -r -m 1
+
+    assert_equal "$PROMPT" "test"
+    assert_equal "$MAX_RUNS" "1"
+    assert_equal "$REVIEW_PROMPT" "$PROMPT_DEFAULT_REVIEWER"
+}
+
+@test "parse_arguments uses default review prompt for empty equals value" {
+    source "$SCRIPT_PATH"
+    parse_arguments --review-prompt=
+
+    assert_equal "$REVIEW_PROMPT" "$PROMPT_DEFAULT_REVIEWER"
+}
+
 @test "parse_arguments handles auto-update flag" {
     source "$SCRIPT_PATH"
     AUTO_UPDATE="false"
@@ -2586,6 +2609,8 @@ setup() {
     run show_help
     assert_output --partial "--disable-comment-review"
     assert_output --partial "--comment-review-max"
+    assert_output --partial "--review-prompt [text]"
+    assert_output --partial "Uses a comprehensive default review prompt"
 }
 
 @test "relpath function handles path outside PWD" {

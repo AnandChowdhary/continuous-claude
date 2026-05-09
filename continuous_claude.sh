@@ -55,6 +55,8 @@ You are performing a review pass on changes just made by another developer. This
 
 **Do NOT commit or push changes** - The automation will handle committing and pushing your changes after you finish. Just focus on validating and fixing any issues."
 
+PROMPT_DEFAULT_REVIEWER="Review the currently changed files on this branch before I ship. Look at the diff and read everything that changed. Run the test suite, typecheck, lint, formatter, etc., whatever is available, and fix anything that fails. Invoke the /simplify skill on the changed files to dedupe, extract clean abstractions where patterns repeat, and tighten naming, but don't over-abstract. Then start the dev server if any, and drive the app with real tooling, like a browser test similar to the agent-browser CLI or whatever else is relevant to this project. Screenshot surfaces you touched, click through the golden path and edge cases, and watch the dev server logs and browser console for warnings or errors where relevant. Report back with what changed, what you simplified, test results, and a screenshot-backed walkthrough, and flag anything you couldn't verify. No need to commit or push."
+
 PROMPT_CI_FIX_CONTEXT="## CI FAILURE FIX CONTEXT
 
 You are analyzing and fixing a CI/CD failure for a pull request.
@@ -236,7 +238,8 @@ OPTIONAL FLAGS:
     --dry-run                     Simulate execution without making changes
     --completion-signal <phrase>  Phrase that agents output when project is complete (default: "CONTINUOUS_CLAUDE_PROJECT_COMPLETE")
     --completion-threshold <num>  Number of consecutive signals to stop early (default: 3)
-    -r, --review-prompt <text>    Run a reviewer pass after each iteration to validate changes
+    -r, --review-prompt [text]    Run a reviewer pass after each iteration to validate changes
+                                  Uses a comprehensive default review prompt when text is omitted
                                   (e.g., run build/lint/tests and fix any issues)
     --disable-ci-retry            Disable automatic CI failure retry (enabled by default)
     --ci-retry-max <number>       Maximum CI fix attempts per PR (default: 1)
@@ -933,9 +936,24 @@ parse_arguments() {
                 COMPLETION_THRESHOLD="$2"
                 shift 2
                 ;;
+            --review-prompt=*)
+                REVIEW_PROMPT="${1#*=}"
+                if [ -z "$REVIEW_PROMPT" ]; then
+                    REVIEW_PROMPT="$PROMPT_DEFAULT_REVIEWER"
+                fi
+                shift
+                ;;
             -r|--review-prompt)
-                REVIEW_PROMPT="$2"
-                shift 2
+                if [ $# -gt 1 ] && [ -z "$2" ]; then
+                    REVIEW_PROMPT="$PROMPT_DEFAULT_REVIEWER"
+                    shift 2
+                elif [ $# -gt 1 ] && [[ "$2" != -* ]]; then
+                    REVIEW_PROMPT="$2"
+                    shift 2
+                else
+                    REVIEW_PROMPT="$PROMPT_DEFAULT_REVIEWER"
+                    shift
+                fi
                 ;;
             --disable-ci-retry)
                 CI_RETRY_ENABLED=false
