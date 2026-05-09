@@ -9,6 +9,7 @@ $script:CodexFlags = @("--json", "--dangerously-bypass-approvals-and-sandbox", "
 
 $script:NotesFile = "SHARED_TASK_NOTES.md"
 $script:AgentProvider = if ($env:CONTINUOUS_CLAUDE_PROVIDER) { $env:CONTINUOUS_CLAUDE_PROVIDER } else { "claude" }
+$script:ReviewProvider = ""
 $script:CodexInputCostPerMillion = if ($env:CODEX_INPUT_COST_PER_MILLION) { $env:CODEX_INPUT_COST_PER_MILLION } else { "" }
 $script:CodexOutputCostPerMillion = if ($env:CODEX_OUTPUT_COST_PER_MILLION) { $env:CODEX_OUTPUT_COST_PER_MILLION } else { "" }
 $script:CodexCachedInputCostPerMillion = if ($env:CODEX_CACHED_INPUT_COST_PER_MILLION) { $env:CODEX_CACHED_INPUT_COST_PER_MILLION } else { "" }
@@ -96,6 +97,7 @@ OPTIONAL FLAGS:
     -h, --help                      Show this help message
     -v, --version                   Show version information
     --provider <provider>           AI coding agent provider: claude or codex (default: claude)
+    --review-provider <provider>    Provider for reviewer pass: claude or codex (defaults to --provider)
     --owner <owner>                 GitHub repository owner (auto-detected from git remote if not provided)
     --repo <repo>                   GitHub repository name (auto-detected from git remote if not provided)
     --disable-commits               Disable automatic commits and PR creation
@@ -123,6 +125,7 @@ OPTIONAL FLAGS:
 EXAMPLES:
     ./continuous_claude.ps1 -p "Fix lint errors" -m 3
     ./continuous_claude.ps1 --provider codex -p "Add tests" -m 3
+    ./continuous_claude.ps1 --provider claude --review-provider codex -p "Add tests" -m 3 -r
     ./continuous_claude.ps1 -p "Review my branch" -m 1 -r --disable-commits
 "@
 }
@@ -186,6 +189,11 @@ function Parse-Arguments {
             }
             "^--provider$" {
                 $script:AgentProvider = Need-Value $Items $i $arg
+                $i += 2
+                continue
+            }
+            "^--review-provider$" {
+                $script:ReviewProvider = Need-Value $Items $i $arg
                 $i += 2
                 continue
             }
@@ -440,18 +448,32 @@ function Require-Command {
 }
 
 function Get-AgentCommand {
-    switch ($script:AgentProvider) {
+    param([string]$Provider = $script:AgentProvider)
+
+    switch ($Provider) {
         "claude" { return "claude" }
         "codex" { return "codex" }
-        default { return $script:AgentProvider }
+        default { return $Provider }
     }
 }
 
 function Get-AgentDisplayName {
-    switch ($script:AgentProvider) {
+    param([string]$Provider = $script:AgentProvider)
+
+    switch ($Provider) {
         "claude" { return "Claude Code" }
         "codex" { return "Codex CLI" }
-        default { return $script:AgentProvider }
+        default { return $Provider }
+    }
+}
+
+function Get-AgentInstallUrl {
+    param([string]$Provider = $script:AgentProvider)
+
+    switch ($Provider) {
+        "claude" { return "https://github.com/anthropics/claude-code" }
+        "codex" { return "https://help.openai.com/en/articles/11096431" }
+        default { return "provider-specific install instructions" }
     }
 }
 
@@ -471,6 +493,11 @@ function Detect-GitHubRepo {
 function Validate-Arguments {
     if ($script:AgentProvider -notin @("claude", "codex")) {
         Write-Err "Error: --provider must be one of: claude, codex"
+        exit 1
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:ReviewProvider) -and $script:ReviewProvider -notin @("claude", "codex")) {
+        Write-Err "Error: --review-provider must be one of: claude, codex"
         exit 1
     }
 
@@ -513,7 +540,7 @@ function Validate-Arguments {
         exit 1
     }
 
-    if ($script:AgentProvider -eq "codex" -and -not [string]::IsNullOrWhiteSpace($script:MaxCost)) {
+    if (($script:AgentProvider -eq "codex" -or (-not [string]::IsNullOrWhiteSpace($script:ReviewPrompt) -and $script:ReviewProvider -eq "codex")) -and -not [string]::IsNullOrWhiteSpace($script:MaxCost)) {
         if ([string]::IsNullOrWhiteSpace($script:CodexInputCostPerMillion) -or [string]::IsNullOrWhiteSpace($script:CodexOutputCostPerMillion)) {
             Write-Err "Error: Codex CLI does not report USD cost. Use --codex-input-cost-per-million and --codex-output-cost-per-million with --max-cost."
             exit 1
@@ -558,7 +585,10 @@ function Validate-Arguments {
 }
 
 function Validate-Requirements {
-    Require-Command (Get-AgentCommand) "https://github.com/anthropics/claude-code or https://help.openai.com/en/articles/11096431"
+    Require-Command (Get-AgentCommand $script:AgentProvider) (Get-AgentInstallUrl $script:AgentProvider)
+    if (-not [string]::IsNullOrWhiteSpace($script:ReviewPrompt) -and -not [string]::IsNullOrWhiteSpace($script:ReviewProvider)) {
+        Require-Command (Get-AgentCommand $script:ReviewProvider) (Get-AgentInstallUrl $script:ReviewProvider)
+    }
     Require-Command "git" "https://git-scm.com/download/win"
     if ($script:EnableCommits -and -not $script:DisableBranches) {
         Require-Command "gh" "https://cli.github.com"
@@ -751,55 +781,62 @@ function Get-JsonError {
 function Invoke-AgentIteration {
     param(
         [string]$PromptText,
-        [string]$IterationDisplay
+        [string]$IterationDisplay,
+        [string]$Provider = $script:AgentProvider
     )
 
-    $displayName = Get-AgentDisplayName
-    if ($script:DryRun) {
-        Write-Err "(DRY RUN) Would run $displayName with prompt: $PromptText"
+    $previousProvider = $script:AgentProvider
+    $script:AgentProvider = $Provider
+    try {
+        $displayName = Get-AgentDisplayName
+        if ($script:DryRun) {
+            Write-Err "(DRY RUN) Would run $displayName with prompt: $PromptText"
+            if ($script:AgentProvider -eq "codex") {
+                $records = @()
+                $records += @(Convert-JsonLines '{"type":"item.completed","item":{"type":"agent_message","text":"This is a simulated response from Codex CLI."}}')
+                $records += @(Convert-JsonLines '{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}}')
+            } else {
+                $records = @(Convert-JsonLines '{"type":"result","is_error":false,"result":"This is a simulated response from Claude Code.","total_cost_usd":0}')
+            }
+            return [pscustomobject]@{ Success = $true; ExitCode = 0; Records = @($records); Error = "" }
+        }
+
         if ($script:AgentProvider -eq "codex") {
-            $records = @()
-            $records += @(Convert-JsonLines '{"type":"item.completed","item":{"type":"agent_message","text":"This is a simulated response from Codex CLI."}}')
-            $records += @(Convert-JsonLines '{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0}}')
+            $arguments = @("exec") + $script:CodexFlags + @("-C", (Get-Location).Path) + @($script:ExtraAgentFlags) + @($PromptText)
+            $result = Invoke-ExternalCommand "codex" $arguments
         } else {
-            $records = @(Convert-JsonLines '{"type":"result","is_error":false,"result":"This is a simulated response from Claude Code.","total_cost_usd":0}')
+            $arguments = @("-p", $PromptText) + $script:ClaudeFlags + @($script:ExtraAgentFlags)
+            $result = Invoke-ExternalCommand "claude" $arguments
         }
+
+        if (-not [string]::IsNullOrWhiteSpace($result.StdErr)) {
+            Write-Err $result.StdErr.TrimEnd()
+        }
+
+        $records = @(Convert-JsonLines $result.StdOut)
+        Write-AgentDisplay $records $IterationDisplay
+
+        if ($result.ExitCode -ne 0) {
+            $jsonError = Get-JsonError $records
+            $errorMessage = if (-not [string]::IsNullOrWhiteSpace($result.StdErr)) {
+                $result.StdErr.Trim()
+            } elseif (-not [string]::IsNullOrWhiteSpace($jsonError)) {
+                $jsonError
+            } else {
+                "$displayName exited with code $($result.ExitCode) but produced no error output"
+            }
+            return [pscustomobject]@{ Success = $false; ExitCode = $result.ExitCode; Records = @($records); Error = $errorMessage }
+        }
+
+        $parseError = ""
+        if (-not (Test-AgentSuccess $records ([ref]$parseError))) {
+            return [pscustomobject]@{ Success = $false; ExitCode = 0; Records = @($records); Error = $parseError }
+        }
+
         return [pscustomobject]@{ Success = $true; ExitCode = 0; Records = @($records); Error = "" }
+    } finally {
+        $script:AgentProvider = $previousProvider
     }
-
-    if ($script:AgentProvider -eq "codex") {
-        $arguments = @("exec") + $script:CodexFlags + @("-C", (Get-Location).Path) + @($script:ExtraAgentFlags) + @($PromptText)
-        $result = Invoke-ExternalCommand "codex" $arguments
-    } else {
-        $arguments = @("-p", $PromptText) + $script:ClaudeFlags + @($script:ExtraAgentFlags)
-        $result = Invoke-ExternalCommand "claude" $arguments
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($result.StdErr)) {
-        Write-Err $result.StdErr.TrimEnd()
-    }
-
-    $records = @(Convert-JsonLines $result.StdOut)
-    Write-AgentDisplay $records $IterationDisplay
-
-    if ($result.ExitCode -ne 0) {
-        $jsonError = Get-JsonError $records
-        $errorMessage = if (-not [string]::IsNullOrWhiteSpace($result.StdErr)) {
-            $result.StdErr.Trim()
-        } elseif (-not [string]::IsNullOrWhiteSpace($jsonError)) {
-            $jsonError
-        } else {
-            "$displayName exited with code $($result.ExitCode) but produced no error output"
-        }
-        return [pscustomobject]@{ Success = $false; ExitCode = $result.ExitCode; Records = @($records); Error = $errorMessage }
-    }
-
-    $parseError = ""
-    if (-not (Test-AgentSuccess $records ([ref]$parseError))) {
-        return [pscustomobject]@{ Success = $false; ExitCode = 0; Records = @($records); Error = $parseError }
-    }
-
-    return [pscustomobject]@{ Success = $true; ExitCode = 0; Records = @($records); Error = "" }
 }
 
 function Invoke-AgentQuiet {
@@ -1061,13 +1098,21 @@ function Invoke-SingleIteration {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($script:ReviewPrompt)) {
-        Write-Err "$iterationDisplay Running reviewer pass..."
-        $review = Invoke-AgentIteration (Build-ReviewerPrompt) $iterationDisplay
+        $reviewProvider = if ([string]::IsNullOrWhiteSpace($script:ReviewProvider)) { $script:AgentProvider } else { $script:ReviewProvider }
+        $reviewDisplay = Get-AgentDisplayName $reviewProvider
+        Write-Err "$iterationDisplay Running reviewer pass with $reviewDisplay..."
+        $review = Invoke-AgentIteration (Build-ReviewerPrompt) $iterationDisplay $reviewProvider
         if (-not $review.Success) {
             Write-Err "$iterationDisplay Reviewer failed: $($review.Error)"
             return [pscustomobject]@{ Success = $false; Completed = $false; Cost = $cost }
         }
-        $reviewCost = Get-AgentCost $review.Records
+        $previousProvider = $script:AgentProvider
+        $script:AgentProvider = $reviewProvider
+        try {
+            $reviewCost = Get-AgentCost $review.Records
+        } finally {
+            $script:AgentProvider = $previousProvider
+        }
         if ($null -ne $reviewCost) {
             $cost += $reviewCost
             Write-Err ("$iterationDisplay Reviewer cost: {0:C3}" -f $reviewCost)

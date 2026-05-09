@@ -171,6 +171,7 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 
 - `-p, --prompt`: Task prompt for the selected AI coding agent (required)
 - `--provider`: AI coding provider, either `claude` or `codex` (default: `claude`)
+- `--review-provider`: AI coding provider for reviewer passes, either `claude` or `codex` (defaults to `--provider`)
 - `-m, --max-runs`: Maximum number of iterations, use `0` for infinite (required unless --max-cost or --max-duration is provided)
 - `--max-cost`: Maximum USD to spend (required unless --max-runs or --max-duration is provided)
 - `--max-duration`: Maximum duration to run (e.g., `2h`, `30m`, `1h30m`) (required unless --max-runs or --max-cost is provided)
@@ -211,6 +212,9 @@ continuous-claude -p "improve code quality" -m 5
 
 # Run 5 iterations with Codex CLI
 continuous-claude --provider codex -p "improve code quality" -m 5
+
+# Use Claude for implementation and Codex for the reviewer pass
+continuous-claude --provider claude --review-provider codex -p "add feature" -m 5 -r
 
 # Run infinitely until stopped
 continuous-claude -p "add unit tests until all code is covered" -m 0
