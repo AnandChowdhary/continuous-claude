@@ -186,6 +186,40 @@ require_pwsh() {
     assert_equal "$DISABLE_UPDATES" "true"
 }
 
+@test "parse_arguments handles command retry flags" {
+    source "$SCRIPT_PATH"
+    parse_arguments --command-retry-max 4 --command-retry-base-delay 2
+
+    assert_equal "$COMMAND_RETRY_MAX_ATTEMPTS" "4"
+    assert_equal "$COMMAND_RETRY_BASE_DELAY" "2"
+}
+
+@test "validate_arguments fails with invalid command-retry-max" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    COMMAND_RETRY_MAX_ATTEMPTS="invalid"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --command-retry-max must be a positive integer"
+}
+
+@test "validate_arguments fails with invalid command-retry-base-delay" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    COMMAND_RETRY_BASE_DELAY="invalid"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --command-retry-base-delay must be a non-negative integer"
+}
+
 @test "render_notes_prompt uses current notes-file value" {
     source "$SCRIPT_PATH"
     NOTES_FILE="CUSTOM_NOTES.md"
@@ -958,6 +992,41 @@ require_pwsh() {
     assert_success
     run grep -q "commit please" "$args_file"
     assert_success
+}
+
+@test "run_with_command_retry retries with exponential backoff" {
+    source "$SCRIPT_PATH"
+    COMMAND_RETRY_MAX_ATTEMPTS=3
+    COMMAND_RETRY_BASE_DELAY=2
+
+    echo "0" > "$BATS_TEST_TMPDIR/retry_count"
+    : > "$BATS_TEST_TMPDIR/sleeps"
+
+    function flaky_command() {
+        local count
+        count=$(cat "$BATS_TEST_TMPDIR/retry_count")
+        count=$((count + 1))
+        echo "$count" > "$BATS_TEST_TMPDIR/retry_count"
+        if [ "$count" -lt 3 ]; then
+            echo "rate limited"
+            return 1
+        fi
+        echo "ok"
+        return 0
+    }
+
+    function sleep() {
+        echo "$1" >> "$BATS_TEST_TMPDIR/sleeps"
+        return 0
+    }
+    export -f flaky_command sleep
+
+    run run_with_command_retry "test command" flaky_command
+
+    assert_success
+    assert_output --partial "ok"
+    assert_equal "$(cat "$BATS_TEST_TMPDIR/retry_count")" "3"
+    assert_equal "$(tr '\n' ',' < "$BATS_TEST_TMPDIR/sleeps")" "2,4,"
 }
 
 @test "get_latest_version returns version when gh is available" {
@@ -1870,6 +1939,77 @@ require_pwsh() {
     refute_output --partial "claude should not be called"
 }
 
+@test "continuous_claude_commit retries transient PR creation failures" {
+    source "$SCRIPT_PATH"
+
+    ENABLE_COMMITS="true"
+    DRY_RUN="false"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    COMMAND_RETRY_MAX_ATTEMPTS=2
+    COMMAND_RETRY_BASE_DELAY=1
+
+    function git() {
+        case "$1 $2 $3 $4" in
+            "rev-parse --git-dir"*)
+                return 0
+                ;;
+            "diff --quiet --ignore-submodules=dirty"*)
+                return 0
+                ;;
+            "diff --cached --quiet --ignore-submodules=dirty"*)
+                return 0
+                ;;
+            "ls-files --others --exclude-standard"*)
+                echo ""
+                ;;
+            "rev-list --count main..test-branch"*)
+                echo "1"
+                ;;
+            "log -1 --format=%B"*)
+                echo "Test commit message"
+                ;;
+            "push -u origin test-branch"*)
+                return 0
+                ;;
+            checkout*|branch*)
+                return 0
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+
+    echo "0" > "$BATS_TEST_TMPDIR/pr_create_count"
+    function gh() {
+        if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+            local count
+            count=$(cat "$BATS_TEST_TMPDIR/pr_create_count")
+            count=$((count + 1))
+            echo "$count" > "$BATS_TEST_TMPDIR/pr_create_count"
+            if [ "$count" -eq 1 ]; then
+                echo "GraphQL: API rate limit already exceeded" >&2
+                return 1
+            fi
+            echo "https://github.com/user/repo/pull/123"
+            return 0
+        fi
+        return 1
+    }
+    export -f gh
+
+    function wait_for_pr_checks() { return 0; }
+    function merge_pr_and_cleanup() { return 0; }
+    function sleep() { return 0; }
+    export -f wait_for_pr_checks merge_pr_and_cleanup sleep
+
+    run continuous_claude_commit "(1/1)" "test-branch" "main"
+
+    assert_success
+    assert_output --partial "Retrying (1/1) create PR in 1s"
+    assert_equal "$(cat "$BATS_TEST_TMPDIR/pr_create_count")" "2"
+}
+
 @test "merge_pr_and_cleanup surfaces GitHub plan restriction errors" {
     source "$SCRIPT_PATH"
 
@@ -2229,7 +2369,8 @@ require_pwsh() {
     # - has_changes will detect untracked files in parent repo
     # - After claude commits, verification will pass (ignoring dirty submodule)
     # - ls-files initially returns untracked files, then returns empty after commit
-    local commit_called=false
+    local commit_state="$BATS_TEST_TMPDIR/continuous_commit_called"
+    echo "false" > "$commit_state"
     function git() {
         case "$1 $2 $3 $4 $5" in
             "rev-parse --git-dir"*)
@@ -2246,7 +2387,7 @@ require_pwsh() {
                 ;;
             "ls-files --others"*)
                 # Return untracked files before commit, empty after
-                if [ "$commit_called" = "false" ]; then
+                if [ "$(cat "$commit_state")" = "false" ]; then
                     echo "newfile.txt"  # Simulates untracked file in parent repo
                 else
                     echo ""  # No untracked files after commit
@@ -2265,16 +2406,14 @@ require_pwsh() {
         return 0
     }
     export -f git
-    
-    commit_called=false
-    
+
     # Mock claude to succeed and mark that commit was called
     function claude() {
-        commit_called=true
+        echo "true" > "$commit_state"
         return 0
     }
     export -f claude
-    export commit_called
+    export commit_state
     
     # Run the function - it may fail on PR creation but commit verification should pass
     run continuous_claude_commit "(1/1)" "test-branch" "main"
@@ -2292,7 +2431,8 @@ require_pwsh() {
     DRY_RUN="false"
     
     # Mock git to simulate a repository with changes in parent repo AND a dirty submodule
-    local commit_called=false
+    local commit_state="$BATS_TEST_TMPDIR/current_branch_commit_called"
+    echo "false" > "$commit_state"
     function git() {
         case "$1 $2 $3 $4 $5" in
             "rev-parse --git-dir"*)
@@ -2306,7 +2446,7 @@ require_pwsh() {
                 ;;
             "ls-files --others"*)
                 # Return untracked files before commit, empty after
-                if [ "$commit_called" = "false" ]; then
+                if [ "$(cat "$commit_state")" = "false" ]; then
                     echo "newfile.txt"  # Simulates untracked file in parent repo
                 else
                     echo ""  # No untracked files after commit
@@ -2319,16 +2459,14 @@ require_pwsh() {
         return 0
     }
     export -f git
-    
-    commit_called=false
-    
+
     # Mock claude to succeed and mark that commit was called
     function claude() {
-        commit_called=true
+        echo "true" > "$commit_state"
         return 0
     }
     export -f claude
-    export commit_called
+    export commit_state
     
     # Run the function
     run commit_on_current_branch "(1/1)"
@@ -2336,6 +2474,68 @@ require_pwsh() {
     # Should succeed because --ignore-submodules=dirty allows dirty submodules
     assert_success
     assert_output --partial "Committed: Test commit"
+}
+
+@test "commit_on_current_branch retries transient commit failures" {
+    source "$SCRIPT_PATH"
+
+    DRY_RUN="false"
+    COMMAND_RETRY_MAX_ATTEMPTS=2
+    COMMAND_RETRY_BASE_DELAY=1
+
+    local commit_state="$BATS_TEST_TMPDIR/current_branch_retry_committed"
+    local commit_count="$BATS_TEST_TMPDIR/current_branch_retry_count"
+    echo "false" > "$commit_state"
+    echo "0" > "$commit_count"
+
+    function git() {
+        case "$1 $2 $3 $4 $5" in
+            "rev-parse --git-dir"*)
+                return 0
+                ;;
+            "diff --quiet"*)
+                if [ "$(cat "$commit_state")" = "true" ]; then
+                    return 0
+                fi
+                return 1
+                ;;
+            "diff --cached --quiet"*)
+                return 0
+                ;;
+            "ls-files --others"*)
+                echo ""
+                ;;
+            "log -1 --format=%s"*)
+                echo "Retry commit"
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+
+    function claude() {
+        local count
+        count=$(cat "$commit_count")
+        count=$((count + 1))
+        echo "$count" > "$commit_count"
+        if [ "$count" -eq 1 ]; then
+            echo "temporary commit failure" >&2
+            return 1
+        fi
+
+        echo "true" > "$commit_state"
+        return 0
+    }
+    function sleep() { return 0; }
+    export -f claude sleep
+    export commit_state commit_count
+
+    run commit_on_current_branch "(1/1)"
+
+    assert_success
+    assert_output --partial "Retrying (1/1) commit command in 1s"
+    assert_output --partial "Committed: Retry commit"
+    assert_equal "$(cat "$commit_count")" "2"
 }
 
 @test "commit_on_current_branch uses Codex provider when selected" {
@@ -2734,6 +2934,8 @@ require_pwsh() {
     run show_help
     assert_output --partial "--disable-comment-review"
     assert_output --partial "--comment-review-max"
+    assert_output --partial "--command-retry-max"
+    assert_output --partial "--command-retry-base-delay"
     assert_output --partial "--review-prompt [text]"
     assert_output --partial "Uses a comprehensive default review prompt"
 }
