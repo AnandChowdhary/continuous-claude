@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.24.6] - 2026-05-09
+
+### What's Changed
+
+- Add adaptive rate limiting (#62) (5465fae)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.24.5...v0.24.6
+
+
 ## [v0.24.5] - 2026-05-09
 
 ### What's Changed
