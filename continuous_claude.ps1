@@ -109,6 +109,8 @@ OPTIONAL FLAGS:
     --completion-signal <phrase>    Phrase agents output when project is complete
     --completion-threshold <num>    Consecutive signals required to stop early (default: 3)
     --stall-threshold <number>      Bash-runner only; pause after repeated failures and write diagnostics
+    --max-calls-per-hour <number>   Bash-runner only; throttle provider calls to this hourly ceiling
+    --error-threshold <number>      Bash-runner only; consecutive non-rate-limit errors before exiting
     -r, --review-prompt [text]      Run a reviewer pass after each iteration; uses a default prompt when text is omitted
     --codex-input-cost-per-million <dollars>
                                     Input token rate for Codex --max-cost estimates
@@ -286,6 +288,12 @@ function Parse-Arguments {
                 continue
             }
             "^--stall-threshold$" {
+                Exit-UnsupportedFlag $arg
+            }
+            "^--max-calls-per-hour$" {
+                Exit-UnsupportedFlag $arg
+            }
+            "^--error-threshold$" {
                 Exit-UnsupportedFlag $arg
             }
             "^--review-prompt=.*$" {

@@ -126,7 +126,14 @@ DRY_RUN=false
 COMPLETION_SIGNAL="CONTINUOUS_CLAUDE_PROJECT_COMPLETE"
 COMPLETION_THRESHOLD=3
 STALL_THRESHOLD=""
+MAX_CALLS_PER_HOUR=""
+ERROR_THRESHOLD=3
 ERROR_LOG=""
+RATE_LIMIT_CALL_LOG=""
+RATE_LIMIT_ERROR_LOG=""
+RATE_LIMIT_COST_LOG=""
+RATE_LIMIT_WINDOW_SECONDS=3600
+RATE_LIMIT_DEFAULT_BACKOFF=300
 error_count=0
 extra_iterations=0
 successful_iterations=0
@@ -258,6 +265,8 @@ OPTIONAL FLAGS:
     --completion-signal <phrase>  Phrase that agents output when project is complete (default: "CONTINUOUS_CLAUDE_PROJECT_COMPLETE")
     --completion-threshold <num>  Number of consecutive signals to stop early (default: 3)
     --stall-threshold <number>    Pause after N consecutive failures and write diagnostics to the notes file
+    --max-calls-per-hour <number> Throttle provider calls to this hourly ceiling
+    --error-threshold <number>    Consecutive non-rate-limit errors before exiting (default: 3)
     -r, --review-prompt [text]    Run a reviewer pass after each iteration to validate changes
                                   Uses a comprehensive default review prompt when text is omitted
                                   (e.g., run build/lint/tests and fix any issues)
@@ -972,6 +981,14 @@ parse_arguments() {
                 STALL_THRESHOLD="$2"
                 shift 2
                 ;;
+            --max-calls-per-hour)
+                MAX_CALLS_PER_HOUR="$2"
+                shift 2
+                ;;
+            --error-threshold)
+                ERROR_THRESHOLD="$2"
+                shift 2
+                ;;
             --review-prompt=*)
                 REVIEW_PROMPT="${1#*=}"
                 if [ -z "$REVIEW_PROMPT" ]; then
@@ -1132,6 +1149,20 @@ validate_arguments() {
         fi
     fi
 
+    if [ -n "$MAX_CALLS_PER_HOUR" ]; then
+        if ! [[ "$MAX_CALLS_PER_HOUR" =~ ^[0-9]+$ ]] || [ "$MAX_CALLS_PER_HOUR" -lt 1 ]; then
+            echo "❌ Error: --max-calls-per-hour must be a positive integer" >&2
+            exit 1
+        fi
+    fi
+
+    if [ -n "$ERROR_THRESHOLD" ]; then
+        if ! [[ "$ERROR_THRESHOLD" =~ ^[0-9]+$ ]] || [ "$ERROR_THRESHOLD" -lt 1 ]; then
+            echo "❌ Error: --error-threshold must be a positive integer" >&2
+            exit 1
+        fi
+    fi
+
     if [ -n "$CI_RETRY_MAX_ATTEMPTS" ]; then
         if ! [[ "$CI_RETRY_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$CI_RETRY_MAX_ATTEMPTS" -lt 1 ]; then
             echo "❌ Error: --ci-retry-max must be a positive integer" >&2
@@ -1210,7 +1241,7 @@ validate_requirements() {
 
     if ! command -v jq &> /dev/null; then
         echo "⚠️ jq is required for JSON parsing but is not installed. Asking $agent_display to install it..." >&2
-        run_agent_prompt_quiet "$PROMPT_JQ_INSTALL" "setup"
+        run_agent_prompt_quiet "$PROMPT_JQ_INSTALL" "setup" >/dev/null 2>&1
         if ! command -v jq &> /dev/null; then
             echo "❌ Error: jq is still not installed after $agent_display attempt." >&2
             exit 1
@@ -1954,17 +1985,19 @@ run_agent_prompt_quiet() {
     local prompt="$1"
     local mode="${2:-git}"
 
+    record_agent_call "agent prompt"
+
     case "$AGENT_PROVIDER" in
         claude)
             local allowed_tools="Bash(git)"
             if [ "$mode" = "setup" ]; then
                 allowed_tools="Bash,Read"
             fi
-            claude -p "$prompt" --allowedTools "$allowed_tools" --dangerously-skip-permissions "${EXTRA_AGENT_FLAGS[@]}" >/dev/null 2>&1
+            claude -p "$prompt" --allowedTools "$allowed_tools" --dangerously-skip-permissions "${EXTRA_AGENT_FLAGS[@]}" >/dev/null
             ;;
         codex)
             # shellcheck disable=SC2086
-            codex exec $CODEX_ADDITIONAL_FLAGS -C "$PWD" "${EXTRA_AGENT_FLAGS[@]}" "$prompt" >/dev/null 2>&1
+            codex exec $CODEX_ADDITIONAL_FLAGS -C "$PWD" "${EXTRA_AGENT_FLAGS[@]}" "$prompt" >/dev/null
             ;;
         *)
             return 1
@@ -2306,6 +2339,7 @@ run_agent_iteration() {
     local error_log="$3"
     local iteration_display="$4"
 
+    record_agent_call "$iteration_display agent call"
     : > "$error_log"
 
     case "$AGENT_PROVIDER" in
@@ -2362,6 +2396,7 @@ ${review_prompt}"
     if [ -n "$reviewer_cost" ]; then
         printf "💰 $iteration_display Reviewer cost: \$%.3f\n" "$reviewer_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $reviewer_cost}")
+        record_rate_cost "$reviewer_cost"
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
@@ -2436,6 +2471,7 @@ run_ci_fix_iteration() {
     if [ -n "$fix_cost" ]; then
         printf "💰 $iteration_display CI fix cost: \$%.3f\n" "$fix_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $fix_cost}")
+        record_rate_cost "$fix_cost"
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
@@ -2539,6 +2575,7 @@ run_comment_fix_iteration() {
     if [ -n "$fix_cost" ]; then
         printf "💰 $iteration_display Comment review cost: \$%.3f\n" "$fix_cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $fix_cost}")
+        record_rate_cost "$fix_cost"
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
@@ -2710,6 +2747,233 @@ extract_agent_usage_summary() {
     '
 }
 
+ensure_rate_limit_logs() {
+    if [ -z "$RATE_LIMIT_CALL_LOG" ]; then
+        RATE_LIMIT_CALL_LOG=$(mktemp)
+    fi
+    if [ -z "$RATE_LIMIT_ERROR_LOG" ]; then
+        RATE_LIMIT_ERROR_LOG=$(mktemp)
+    fi
+    if [ -z "$RATE_LIMIT_COST_LOG" ]; then
+        RATE_LIMIT_COST_LOG=$(mktemp)
+    fi
+}
+
+prune_rate_log() {
+    local log_file="$1"
+    local now="$2"
+    local cutoff=$((now - RATE_LIMIT_WINDOW_SECONDS))
+
+    [ -n "$log_file" ] || return 0
+    [ -f "$log_file" ] || : > "$log_file"
+
+    awk -v cutoff="$cutoff" 'NF && $1 >= cutoff { print }' "$log_file" > "${log_file}.tmp"
+    mv "${log_file}.tmp" "$log_file"
+}
+
+count_rate_log() {
+    local log_file="$1"
+    [ -f "$log_file" ] || {
+        echo 0
+        return 0
+    }
+
+    awk 'NF { count++ } END { print count + 0 }' "$log_file"
+}
+
+sum_cost_rate_log() {
+    local log_file="$1"
+    [ -f "$log_file" ] || {
+        echo "0.000"
+        return 0
+    }
+
+    awk 'NF >= 2 { sum += $2 } END { printf "%.3f", sum + 0 }' "$log_file"
+}
+
+rate_limit_window_stats() {
+    ensure_rate_limit_logs
+
+    local now
+    now=$(date +%s)
+    prune_rate_log "$RATE_LIMIT_CALL_LOG" "$now"
+    prune_rate_log "$RATE_LIMIT_ERROR_LOG" "$now"
+    prune_rate_log "$RATE_LIMIT_COST_LOG" "$now"
+
+    printf "calls %s/hr, errors %s/hr, cost \$%s/hr" \
+        "$(count_rate_log "$RATE_LIMIT_CALL_LOG")" \
+        "$(count_rate_log "$RATE_LIMIT_ERROR_LOG")" \
+        "$(sum_cost_rate_log "$RATE_LIMIT_COST_LOG")"
+}
+
+record_rate_error() {
+    ensure_rate_limit_logs
+    local now
+    now=$(date +%s)
+    prune_rate_log "$RATE_LIMIT_ERROR_LOG" "$now"
+    echo "$now" >> "$RATE_LIMIT_ERROR_LOG"
+}
+
+record_rate_cost() {
+    local cost="$1"
+    [ -n "$cost" ] || return 0
+    ensure_rate_limit_logs
+    local now
+    now=$(date +%s)
+    prune_rate_log "$RATE_LIMIT_COST_LOG" "$now"
+    echo "$now $cost" >> "$RATE_LIMIT_COST_LOG"
+}
+
+record_agent_call() {
+    local label="${1:-agent call}"
+
+    if [ "$DRY_RUN" = "true" ]; then
+        return 0
+    fi
+
+    ensure_rate_limit_logs
+
+    local now
+    now=$(date +%s)
+    prune_rate_log "$RATE_LIMIT_CALL_LOG" "$now"
+
+    if [ -n "$MAX_CALLS_PER_HOUR" ]; then
+        local call_count
+        call_count=$(count_rate_log "$RATE_LIMIT_CALL_LOG")
+        if [ "$call_count" -ge "$MAX_CALLS_PER_HOUR" ]; then
+            local oldest wait_seconds
+            oldest=$(awk 'NF { print $1; exit }' "$RATE_LIMIT_CALL_LOG")
+            wait_seconds=$((oldest + RATE_LIMIT_WINDOW_SECONDS - now))
+            if [ "$wait_seconds" -gt 0 ]; then
+                echo "⏱ $label throttled for $(format_duration "$wait_seconds") (limit ${MAX_CALLS_PER_HOUR}/hr; $(rate_limit_window_stats))" >&2
+                sleep "$wait_seconds"
+                now=$(date +%s)
+                prune_rate_log "$RATE_LIMIT_CALL_LOG" "$now"
+            fi
+        fi
+    fi
+
+    echo "$now" >> "$RATE_LIMIT_CALL_LOG"
+}
+
+seconds_until_time_today_or_tomorrow() {
+    local hour="$1"
+    local minute="${2:-0}"
+    local timezone="${3:-}"
+
+    local now_parts
+    if [ -n "$timezone" ]; then
+        now_parts=$(TZ="$timezone" date '+%H %M %S' 2>/dev/null || date '+%H %M %S')
+    else
+        now_parts=$(date '+%H %M %S')
+    fi
+
+    local now_hour now_minute now_second
+    read -r now_hour now_minute now_second <<< "$now_parts"
+
+    local now_seconds=$((10#$now_hour * 3600 + 10#$now_minute * 60 + 10#$now_second))
+    local target_seconds=$((10#$hour * 3600 + 10#$minute * 60))
+    local wait_seconds=$((target_seconds - now_seconds))
+    if [ "$wait_seconds" -le 0 ]; then
+        wait_seconds=$((wait_seconds + 86400))
+    fi
+
+    echo "$wait_seconds"
+}
+
+parse_reset_time_wait_seconds() {
+    local text="$1"
+    local reset_parts
+
+    reset_parts=$(printf "%s" "$text" | tr '\n' ' ' | sed -nE 's/.*resets([[:space:]]+at)?[[:space:]]+([0-9]{1,2})(:([0-9]{2}))?[[:space:]]*([AaPp][Mm])?[[:space:]]*(\(([^)]*)\))?.*/\2|\4|\5|\7/p' | head -n 1)
+    [ -n "$reset_parts" ] || return 1
+
+    local hour minute ampm timezone
+    IFS='|' read -r hour minute ampm timezone <<< "$reset_parts"
+    minute="${minute:-0}"
+
+    if [ -n "$ampm" ]; then
+        case "$(printf "%s" "$ampm" | tr '[:upper:]' '[:lower:]')" in
+            pm)
+                if [ "$hour" -lt 12 ]; then
+                    hour=$((hour + 12))
+                fi
+                ;;
+            am)
+                if [ "$hour" -eq 12 ]; then
+                    hour=0
+                fi
+                ;;
+        esac
+    fi
+
+    seconds_until_time_today_or_tomorrow "$hour" "$minute" "$timezone"
+}
+
+detect_rate_limit_wait_seconds() {
+    local text="$1"
+    local lower
+    lower=$(printf "%s" "$text" | tr '[:upper:]' '[:lower:]')
+
+    case "$lower" in
+        *"rate limit"*|*"rate_limit_error"*|*"too many requests"*|*"429"*|*"overloaded_error"*|*"temporarily overloaded"*|*"limit reached"*)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    local reset_wait
+    if reset_wait=$(parse_reset_time_wait_seconds "$text"); then
+        echo "$reset_wait"
+        return 0
+    fi
+
+    local retry_after
+    retry_after=$(printf "%s" "$lower" | grep -Eio 'retry[-_ ]?after[^0-9]{0,20}[0-9]+' | head -n 1 | grep -Eo '[0-9]+' | tail -n 1 || true)
+    if [ -n "$retry_after" ]; then
+        echo "$retry_after"
+        return 0
+    fi
+
+    local wait_match
+    wait_match=$(printf "%s" "$lower" | grep -Eio '(try again|retry|wait)[^0-9]{0,20}[0-9]+[[:space:]]*(seconds?|secs?|s|minutes?|mins?|m)' | head -n 1 || true)
+    if [ -n "$wait_match" ]; then
+        local amount unit
+        amount=$(printf "%s" "$wait_match" | grep -Eo '[0-9]+' | head -n 1)
+        unit=$(printf "%s" "$wait_match" | grep -Eio '(seconds?|secs?|s|minutes?|mins?|m)$' | head -n 1)
+        case "$unit" in
+            minute|minutes|min|mins|m)
+                echo $((amount * 60))
+                ;;
+            *)
+                echo "$amount"
+                ;;
+        esac
+        return 0
+    fi
+
+    echo "$RATE_LIMIT_DEFAULT_BACKOFF"
+    return 0
+}
+
+maybe_sleep_for_rate_limit() {
+    local iteration_display="$1"
+    local error_type="$2"
+    local details="${3:-}"
+
+    local error_details wait_seconds
+    error_details=$(get_recent_failure_details "$details")
+    if ! wait_seconds=$(detect_rate_limit_wait_seconds "$error_details"); then
+        return 1
+    fi
+
+    echo "⏱ $iteration_display Rate limit detected in $error_type; throttled for $(format_duration "$wait_seconds") ($(rate_limit_window_stats))" >&2
+    sleep "$wait_seconds"
+    error_count=0
+    return 0
+}
+
 repo_has_pending_changes() {
     if ! git rev-parse --git-dir > /dev/null 2>&1; then
         return 1
@@ -2804,8 +3068,8 @@ maybe_handle_stall_threshold() {
         exit 1
     fi
 
-    if [ -z "$STALL_THRESHOLD" ] && [ "$error_count" -ge 3 ]; then
-        echo "❌ Fatal: 3 consecutive errors occurred. Exiting." >&2
+    if [ -z "$STALL_THRESHOLD" ] && [ "$error_count" -ge "$ERROR_THRESHOLD" ]; then
+        echo "❌ Fatal: $ERROR_THRESHOLD consecutive errors occurred. Exiting." >&2
         exit 1
     fi
 }
@@ -2817,6 +3081,7 @@ handle_iteration_error() {
     
     error_count=$((error_count + 1))
     extra_iterations=$((extra_iterations + 1))
+    record_rate_error
     
     case "$error_type" in
         "exit_code")
@@ -2862,6 +3127,10 @@ handle_iteration_error() {
             ;;
     esac
     
+    if maybe_sleep_for_rate_limit "$iteration_display" "$error_type" "$error_output"; then
+        return 1
+    fi
+
     maybe_handle_stall_threshold "$iteration_display" "$error_type" "$error_output"
     
     return 1
@@ -2886,6 +3155,7 @@ handle_iteration_success() {
         echo "" >&2
         printf "💰 $iteration_display Iteration cost: \$%.3f\n" "$cost" >&2
         total_cost=$(awk "BEGIN {printf \"%.3f\", $total_cost + $cost}")
+        record_rate_cost "$cost"
         printf "   Running total: \$%.3f\n" "$total_cost" >&2
     fi
 
@@ -2902,7 +3172,11 @@ handle_iteration_success() {
             if ! commit_on_current_branch "$iteration_display"; then
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
+                record_rate_error
                 echo "❌ $iteration_display Commit failed ($error_count consecutive errors)" >&2
+                if maybe_sleep_for_rate_limit "$iteration_display" "commit failed"; then
+                    return 1
+                fi
                 maybe_handle_stall_threshold "$iteration_display" "commit failed"
                 return 1
             fi
@@ -2911,7 +3185,11 @@ handle_iteration_success() {
             if ! continuous_claude_commit "$iteration_display" "$branch_name" "$main_branch"; then
                 error_count=$((error_count + 1))
                 extra_iterations=$((extra_iterations + 1))
+                record_rate_error
                 echo "❌ $iteration_display PR workflow failed ($error_count consecutive errors)" >&2
+                if maybe_sleep_for_rate_limit "$iteration_display" "PR workflow failed"; then
+                    return 1
+                fi
                 maybe_handle_stall_threshold "$iteration_display" "PR workflow failed"
                 return 1
             fi
@@ -3073,6 +3351,10 @@ $knowledge_content
             # Count as an error for consecutive error tracking
             error_count=$((error_count + 1))
             extra_iterations=$((extra_iterations + 1))
+            record_rate_error
+            if maybe_sleep_for_rate_limit "$iteration_display" "reviewer failed"; then
+                return 1
+            fi
             maybe_handle_stall_threshold "$iteration_display" "reviewer failed"
             return 1
         fi
@@ -3185,7 +3467,10 @@ main() {
     setup_worktree
     
     ERROR_LOG=$(mktemp)
-    trap 'rm -f "$ERROR_LOG"; cleanup_worktree' EXIT
+    RATE_LIMIT_CALL_LOG=$(mktemp)
+    RATE_LIMIT_ERROR_LOG=$(mktemp)
+    RATE_LIMIT_COST_LOG=$(mktemp)
+    trap 'rm -f "$ERROR_LOG" "$RATE_LIMIT_CALL_LOG" "$RATE_LIMIT_ERROR_LOG" "$RATE_LIMIT_COST_LOG"; cleanup_worktree' EXIT
     
     main_loop
     show_completion_summary
