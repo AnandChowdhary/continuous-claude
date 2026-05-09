@@ -1870,6 +1870,51 @@ require_pwsh() {
     refute_output --partial "claude should not be called"
 }
 
+@test "merge_pr_and_cleanup surfaces GitHub plan restriction errors" {
+    source "$SCRIPT_PATH"
+
+    MERGE_STRATEGY="squash"
+
+    function gh() {
+        if [ "$1" = "pr" ] && [ "$2" = "update-branch" ]; then
+            echo "already up-to-date"
+            return 1
+        fi
+        if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then
+            echo "HTTP 403: Upgrade to GitHub Pro or make this repository public to enable this feature." >&2
+            return 1
+        fi
+        return 1
+    }
+    export -f gh
+
+    run merge_pr_and_cleanup "123" "owner" "repo" "test-branch" "(1/1)" "main"
+
+    assert_failure
+    assert_output --partial "Failed to merge PR: HTTP 403: Upgrade to GitHub Pro"
+    assert_output --partial "not a merge queue failure"
+}
+
+@test "handle_iteration_success reports PR workflow failure instead of merge queue failure" {
+    source "$SCRIPT_PATH"
+
+    ENABLE_COMMITS="true"
+    DISABLE_BRANCHES="false"
+    error_count=0
+    extra_iterations=0
+
+    function continuous_claude_commit() {
+        return 1
+    }
+    export -f continuous_claude_commit
+
+    run handle_iteration_success "(1/1)" '{"result":"ok","total_cost_usd":0}' "test-branch" "main"
+
+    assert_failure
+    assert_output --partial "PR workflow failed"
+    refute_output --partial "PR merge queue failed"
+}
+
 @test "wait_for_pr_checks prints initial waiting message once" {
     source "$SCRIPT_PATH"
     
