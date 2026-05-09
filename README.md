@@ -87,6 +87,20 @@ This will:
 - Check for required dependencies
 - Guide you through adding it to your PATH if needed
 
+On Windows with PowerShell 7:
+
+```powershell
+irm https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/main/install.ps1 | iex
+```
+
+This installs the native PowerShell runner as `continuous-claude.ps1`, so Windows users can run Continuous Claude without WSL or Git Bash:
+
+```powershell
+pwsh ~/.local/bin/continuous-claude.ps1 --prompt "add unit tests until all code is covered" --max-runs 5
+```
+
+The PowerShell runner supports the core loop, Claude/Codex providers, reviewer passes, shared notes, duration/cost limits, local commits, and GitHub PR creation/merge. Worktree management, self-update, and automatic CI/comment retry workflows are still Bash-runner only.
+
 ### Manual installation
 
 If you prefer to install manually:
@@ -102,12 +116,23 @@ chmod +x continuous-claude
 sudo mv continuous-claude /usr/local/bin/
 ```
 
+For PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/main/continuous_claude.ps1 -OutFile continuous-claude.ps1
+pwsh ./continuous-claude.ps1 --help
+```
+
 To uninstall `continuous-claude`:
 
 ```bash
 rm ~/.local/bin/continuous-claude
 # or if you installed to /usr/local/bin:
 sudo rm /usr/local/bin/continuous-claude
+```
+
+```powershell
+rm ~/.local/bin/continuous-claude.ps1
 ```
 
 ### Prerequisites
@@ -118,7 +143,7 @@ Before using `continuous-claude`, you need:
    - **[Claude Code CLI](https://code.claude.com)** - Authenticate with `claude auth`
    - **[Codex CLI](https://help.openai.com/en/articles/11096431)** - Authenticate with `codex login`
 2. **[GitHub CLI](https://cli.github.com)** - Authenticate with `gh auth login`
-3. **jq** - Install with `brew install jq` (macOS) or `apt-get install jq` (Linux)
+3. **jq** - Install with `brew install jq` (macOS) or `apt-get install jq` (Linux). The PowerShell runner uses native JSON parsing and does not require `jq`.
 
 ### Usage
 
@@ -128,6 +153,9 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-runs
 
 # Run the same loop with Codex CLI instead of Claude Code
 continuous-claude --provider codex --prompt "add unit tests until all code is covered" --max-runs 5
+
+# Native Windows PowerShell runner
+pwsh ~/.local/bin/continuous-claude.ps1 --prompt "add unit tests until all code is covered" --max-runs 5
 
 # Or explicitly specify the owner and repo
 continuous-claude --prompt "add unit tests until all code is covered" --max-runs 5 --owner AnandChowdhary --repo continuous-claude

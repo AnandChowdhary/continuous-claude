@@ -7,7 +7,14 @@ setup() {
     # Path to the script under test
     # BATS_TEST_DIRNAME is the directory containing the test file
     SCRIPT_PATH="$BATS_TEST_DIRNAME/../continuous_claude.sh"
+    PS_SCRIPT_PATH="$BATS_TEST_DIRNAME/../continuous_claude.ps1"
     export TESTING="true"
+}
+
+require_pwsh() {
+    if ! command -v pwsh >/dev/null 2>&1; then
+        skip "pwsh is not installed"
+    fi
 }
 
 @test "script has valid bash syntax" {
@@ -31,6 +38,79 @@ setup() {
     export -f show_version
     run show_version
     assert_output --partial "continuous-claude version"
+}
+
+@test "powershell script displays version" {
+    require_pwsh
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" --version
+
+    assert_success
+    assert_output --partial "continuous-claude PowerShell version"
+}
+
+@test "powershell script displays help" {
+    require_pwsh
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" --help
+
+    assert_success
+    assert_output --partial "Continuous Claude PowerShell"
+    assert_output --partial "--review-prompt [text]"
+}
+
+@test "powershell dry run supports empty reviewer prompt" {
+    require_pwsh
+
+    local fake_bin="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$fake_bin"
+    printf '#!/bin/sh\nexit 0\n' > "$fake_bin/claude"
+    chmod +x "$fake_bin/claude"
+
+    PATH="$fake_bin:$PATH" run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        -p "test" -r -m 1 --disable-commits --disable-updates --dry-run
+
+    assert_success
+    assert_output --partial "Running reviewer pass"
+    assert_output --partial "Review the currently changed files"
+    assert_output --partial "Skipping commits"
+}
+
+@test "powershell codex dry run returns completed turn" {
+    require_pwsh
+
+    local fake_bin="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$fake_bin"
+    printf '#!/bin/sh\nexit 0\n' > "$fake_bin/codex"
+    chmod +x "$fake_bin/codex"
+
+    PATH="$fake_bin:$PATH" run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        --provider codex -p "test" -m 1 --disable-commits --disable-updates --dry-run
+
+    assert_success
+    assert_output --partial "Running Codex CLI"
+    assert_output --partial "Work completed"
+    assert_output --partial "Skipping commits"
+}
+
+@test "powershell codex max-cost requires token rates" {
+    require_pwsh
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        --provider codex -p "test" --max-cost 5 --disable-commits
+
+    assert_failure
+    assert_output --partial "Codex CLI does not report USD cost"
+}
+
+@test "powershell rejects bash-only workflow flags" {
+    require_pwsh
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        -p "test" -m 1 --worktree windows
+
+    assert_failure
+    assert_output --partial "--worktree is not supported by the native PowerShell runner yet"
 }
 
 @test "parse_arguments handles required flags" {
