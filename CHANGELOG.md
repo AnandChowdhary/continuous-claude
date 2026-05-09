@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.24.3] - 2026-05-09
+
+### What's Changed
+
+- Retry transient commit and PR commands (#59) (4dc7c71)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.24.2...v0.24.3
+
+
 ## [v0.24.2] - 2026-05-09
 
 ### What's Changed
