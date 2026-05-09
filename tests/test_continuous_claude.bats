@@ -125,6 +125,18 @@ require_pwsh() {
 
     assert_failure
     assert_output --partial "--knowledge-file is not supported by the native PowerShell runner yet"
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        -p "test" -m 1 --max-calls-per-hour 80
+
+    assert_failure
+    assert_output --partial "--max-calls-per-hour is not supported by the native PowerShell runner yet"
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        -p "test" -m 1 --error-threshold 5
+
+    assert_failure
+    assert_output --partial "--error-threshold is not supported by the native PowerShell runner yet"
 }
 
 @test "parse_arguments handles required flags" {
@@ -208,11 +220,45 @@ require_pwsh() {
     assert_equal "$COMMAND_RETRY_BASE_DELAY" "2"
 }
 
+@test "parse_arguments handles adaptive rate limit flags" {
+    source "$SCRIPT_PATH"
+    parse_arguments --max-calls-per-hour 80 --error-threshold 5
+
+    assert_equal "$MAX_CALLS_PER_HOUR" "80"
+    assert_equal "$ERROR_THRESHOLD" "5"
+}
+
 @test "parse_arguments handles knowledge-file flag" {
     source "$SCRIPT_PATH"
     parse_arguments --knowledge-file CLAUDE.md
 
     assert_equal "$KNOWLEDGE_FILE" "CLAUDE.md"
+}
+
+@test "validate_arguments fails with invalid max-calls-per-hour" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    MAX_CALLS_PER_HOUR="invalid"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --max-calls-per-hour must be a positive integer"
+}
+
+@test "validate_arguments fails with invalid error-threshold" {
+    source "$SCRIPT_PATH"
+    PROMPT="test"
+    MAX_RUNS="5"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+    ERROR_THRESHOLD="0"
+
+    run validate_arguments
+    assert_failure
+    assert_output --partial "Error: --error-threshold must be a positive integer"
 }
 
 @test "validate_arguments fails with invalid command-retry-max" {
@@ -1187,6 +1233,123 @@ require_pwsh() {
     assert_success
     run grep -q "commit please" "$args_file"
     assert_success
+}
+
+@test "detect_rate_limit_wait_seconds honors retry-after seconds" {
+    source "$SCRIPT_PATH"
+
+    run detect_rate_limit_wait_seconds "HTTP 429 rate_limit_error retry-after: 120"
+
+    assert_success
+    assert_output "120"
+}
+
+@test "detect_rate_limit_wait_seconds parses Claude reset time" {
+    source "$SCRIPT_PATH"
+
+    function date() {
+        if [ "$1" = "+%H %M %S" ]; then
+            echo "04 30 00"
+            return 0
+        fi
+        command date "$@"
+    }
+    export -f date
+
+    run detect_rate_limit_wait_seconds "5-hour limit reached · resets 5am (Europe/Amsterdam) · /upgrade"
+
+    assert_success
+    assert_output "1800"
+}
+
+@test "record_agent_call throttles at max-calls-per-hour" {
+    source "$SCRIPT_PATH"
+
+    MAX_CALLS_PER_HOUR=2
+    RATE_LIMIT_CALL_LOG="$BATS_TEST_TMPDIR/calls.log"
+    RATE_LIMIT_ERROR_LOG="$BATS_TEST_TMPDIR/errors.log"
+    RATE_LIMIT_COST_LOG="$BATS_TEST_TMPDIR/cost.log"
+    printf "1000\n1100\n" > "$RATE_LIMIT_CALL_LOG"
+    : > "$RATE_LIMIT_ERROR_LOG"
+    : > "$RATE_LIMIT_COST_LOG"
+    : > "$BATS_TEST_TMPDIR/sleeps"
+
+    function date() {
+        if [ "$1" = "+%s" ]; then
+            echo "1200"
+            return 0
+        fi
+        command date "$@"
+    }
+    function sleep() {
+        echo "$1" >> "$BATS_TEST_TMPDIR/sleeps"
+    }
+    export -f date sleep
+
+    run record_agent_call "test agent"
+
+    assert_success
+    assert_output --partial "test agent throttled for 56m40s (limit 2/hr"
+    assert_equal "$(cat "$BATS_TEST_TMPDIR/sleeps")" "3400"
+}
+
+@test "handle_iteration_error sleeps through Claude reset limits" {
+    source "$SCRIPT_PATH"
+
+    ERROR_THRESHOLD=1
+    ERROR_LOG="$BATS_TEST_TMPDIR/error.log"
+    RATE_LIMIT_CALL_LOG="$BATS_TEST_TMPDIR/calls.log"
+    RATE_LIMIT_ERROR_LOG="$BATS_TEST_TMPDIR/errors.log"
+    RATE_LIMIT_COST_LOG="$BATS_TEST_TMPDIR/cost.log"
+    echo "5-hour limit reached · resets 5am (Europe/Amsterdam) · /upgrade" > "$ERROR_LOG"
+    : > "$RATE_LIMIT_CALL_LOG"
+    : > "$RATE_LIMIT_ERROR_LOG"
+    : > "$RATE_LIMIT_COST_LOG"
+    : > "$BATS_TEST_TMPDIR/sleeps"
+
+    function date() {
+        case "$1" in
+            "+%s")
+                echo "1000"
+                ;;
+            "+%H %M %S")
+                echo "04 30 00"
+                ;;
+            *)
+                command date "$@"
+                ;;
+        esac
+    }
+    function sleep() {
+        echo "$1" >> "$BATS_TEST_TMPDIR/sleeps"
+    }
+    export -f date sleep
+
+    run handle_iteration_error "(5/22)" "exit_code" ""
+
+    assert_failure
+    assert_output --partial "Rate limit detected in exit_code; throttled for 30m"
+    assert_equal "$(cat "$BATS_TEST_TMPDIR/sleeps")" "1800"
+}
+
+@test "handle_iteration_error uses custom error-threshold for non-rate-limit failures" {
+    source "$SCRIPT_PATH"
+
+    ERROR_THRESHOLD=2
+    error_count=1
+    ERROR_LOG="$BATS_TEST_TMPDIR/error.log"
+    RATE_LIMIT_CALL_LOG="$BATS_TEST_TMPDIR/calls.log"
+    RATE_LIMIT_ERROR_LOG="$BATS_TEST_TMPDIR/errors.log"
+    RATE_LIMIT_COST_LOG="$BATS_TEST_TMPDIR/cost.log"
+    echo "ordinary failure" > "$ERROR_LOG"
+    : > "$RATE_LIMIT_CALL_LOG"
+    : > "$RATE_LIMIT_ERROR_LOG"
+    : > "$RATE_LIMIT_COST_LOG"
+
+    run handle_iteration_error "(2/5)" "exit_code" ""
+
+    assert_failure
+    assert_output --partial "Fatal: 2 consecutive errors occurred. Exiting."
 }
 
 @test "handle_iteration_error writes notes and exits at stall threshold" {
@@ -3155,6 +3318,8 @@ require_pwsh() {
     assert_output --partial "--command-retry-base-delay"
     assert_output --partial "--knowledge-file"
     assert_output --partial "--stall-threshold"
+    assert_output --partial "--max-calls-per-hour"
+    assert_output --partial "--error-threshold"
     assert_output --partial "--review-prompt [text]"
     assert_output --partial "Uses a comprehensive default review prompt"
 }

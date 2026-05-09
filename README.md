@@ -193,6 +193,8 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 - `--completion-signal <phrase>`: Phrase that agents output when entire project is complete (default: `CONTINUOUS_CLAUDE_PROJECT_COMPLETE`)
 - `--completion-threshold <num>`: Number of consecutive completion signals required to stop early (default: `3`)
 - `--stall-threshold <number>`: Pause after this many consecutive failures and append diagnostics to the notes file for human intervention
+- `--max-calls-per-hour <number>`: Throttle provider calls to this hourly ceiling, sleeping until capacity is available
+- `--error-threshold <number>`: Number of consecutive non-rate-limit errors before exiting (default: `3`)
 - `-r, --review-prompt [text]`: Run a reviewer pass after each iteration to validate changes. If you omit the text, Continuous Claude uses a comprehensive default review prompt that reviews the diff, runs available checks, simplifies changed code, and verifies the app where relevant.
 - `--command-retry-max <number>`: Maximum attempts for transient commit/push/PR-create commands before starting a new iteration (default: `3`)
 - `--command-retry-base-delay <seconds>`: Initial retry delay in seconds for transient commands, doubled after each failed attempt (default: `5`)
@@ -273,6 +275,9 @@ continuous-claude -p "fix all bugs" -m 20 --completion-signal "ALL_BUGS_FIXED" -
 
 # Pause and write diagnostics to SHARED_TASK_NOTES.md after repeated failures
 continuous-claude -p "stabilize CI" -m 20 --stall-threshold 3
+
+# Limit provider call throughput and keep retrying through rate-limit reset windows
+continuous-claude -p "fix flaky tests" -m 20 --max-calls-per-hour 80 --error-threshold 5
 
 # Use a reviewer to validate and fix changes after each iteration
 continuous-claude -p "add new feature" -m 5 -r "Run npm test and npm run lint, fix any failures"
