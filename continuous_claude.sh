@@ -125,6 +125,8 @@ CI_RETRY_ENABLED=true
 CI_RETRY_MAX_ATTEMPTS=1
 COMMENT_REVIEW_ENABLED=true
 COMMENT_REVIEW_MAX_ATTEMPTS=1
+COMMAND_RETRY_MAX_ATTEMPTS=3
+COMMAND_RETRY_BASE_DELAY=5
 
 parse_duration() {
     # Parse a duration string like "2h", "30m", "1h30m", "90s" to seconds
@@ -245,6 +247,9 @@ OPTIONAL FLAGS:
     --ci-retry-max <number>       Maximum CI fix attempts per PR (default: 1)
     --disable-comment-review      Disable automatic PR comment review (enabled by default)
     --comment-review-max <number> Maximum comment review attempts per PR (default: 1)
+    --command-retry-max <number>  Maximum attempts for transient commit/push/PR-create commands (default: 3)
+    --command-retry-base-delay <seconds>
+                                  Initial retry delay for transient commands (default: 5)
     --codex-input-cost-per-million <dollars>
                                   Input token rate for Codex --max-cost estimates
     --codex-output-cost-per-million <dollars>
@@ -971,6 +976,14 @@ parse_arguments() {
                 COMMENT_REVIEW_MAX_ATTEMPTS="$2"
                 shift 2
                 ;;
+            --command-retry-max)
+                COMMAND_RETRY_MAX_ATTEMPTS="$2"
+                shift 2
+                ;;
+            --command-retry-base-delay)
+                COMMAND_RETRY_BASE_DELAY="$2"
+                shift 2
+                ;;
             *)
                 # Collect unknown flags to forward to the selected provider CLI.
                 add_extra_agent_flag "$1"
@@ -1091,6 +1104,20 @@ validate_arguments() {
     if [ -n "$COMMENT_REVIEW_MAX_ATTEMPTS" ]; then
         if ! [[ "$COMMENT_REVIEW_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$COMMENT_REVIEW_MAX_ATTEMPTS" -lt 1 ]; then
             echo "❌ Error: --comment-review-max must be a positive integer" >&2
+            exit 1
+        fi
+    fi
+
+    if [ -n "$COMMAND_RETRY_MAX_ATTEMPTS" ]; then
+        if ! [[ "$COMMAND_RETRY_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$COMMAND_RETRY_MAX_ATTEMPTS" -lt 1 ]; then
+            echo "❌ Error: --command-retry-max must be a positive integer" >&2
+            exit 1
+        fi
+    fi
+
+    if [ -n "$COMMAND_RETRY_BASE_DELAY" ]; then
+        if ! [[ "$COMMAND_RETRY_BASE_DELAY" =~ ^[0-9]+$ ]]; then
+            echo "❌ Error: --command-retry-base-delay must be a non-negative integer" >&2
             exit 1
         fi
     fi
@@ -1584,7 +1611,7 @@ continuous_claude_commit() {
     if [ "$has_uncommitted_changes" = "true" ]; then
         echo "💬 $iteration_display Committing changes..." >&2
         
-        if ! run_agent_prompt_quiet "$PROMPT_COMMIT_MESSAGE"; then
+        if ! run_with_command_retry "$iteration_display commit command" run_agent_prompt_quiet "$PROMPT_COMMIT_MESSAGE"; then
             echo "⚠️  $iteration_display Failed to commit changes" >&2
             git checkout "$main_branch" >/dev/null 2>&1
             return 1
@@ -1608,15 +1635,16 @@ continuous_claude_commit() {
     local commit_body=$(echo "$commit_message" | tail -n +4)
 
     echo "📤 $iteration_display Pushing branch..." >&2
-    if ! git push -u origin "$branch_name" >/dev/null 2>&1; then
-        echo "⚠️  $iteration_display Failed to push branch" >&2
+    local push_output
+    if ! push_output=$(run_with_command_retry "$iteration_display push branch" git push -u origin "$branch_name"); then
+        echo "⚠️  $iteration_display Failed to push branch: $push_output" >&2
         git checkout "$main_branch" >/dev/null 2>&1
         return 1
     fi
 
     echo "🔨 $iteration_display Creating pull request..." >&2
     local pr_output
-    if ! pr_output=$(gh pr create --repo "$GITHUB_OWNER/$GITHUB_REPO" --title "$commit_title" --body "$commit_body" --base "$main_branch" 2>&1); then
+    if ! pr_output=$(run_with_command_retry "$iteration_display create PR" gh pr create --repo "$GITHUB_OWNER/$GITHUB_REPO" --title "$commit_title" --body "$commit_body" --base "$main_branch"); then
         echo "⚠️  $iteration_display Failed to create PR: $pr_output" >&2
         git checkout "$main_branch" >/dev/null 2>&1
         return 1
@@ -1730,7 +1758,7 @@ commit_on_current_branch() {
 
     echo "💬 $iteration_display Committing changes on current branch..." >&2
 
-    if ! run_agent_prompt_quiet "$PROMPT_COMMIT_MESSAGE"; then
+    if ! run_with_command_retry "$iteration_display commit command" run_agent_prompt_quiet "$PROMPT_COMMIT_MESSAGE"; then
         echo "⚠️  $iteration_display Failed to commit changes" >&2
         return 1
     fi
@@ -1904,6 +1932,38 @@ run_agent_prompt_quiet() {
             return 1
             ;;
     esac
+}
+
+run_with_command_retry() {
+    local label="$1"
+    shift
+
+    local attempt=1
+    local delay="${COMMAND_RETRY_BASE_DELAY:-5}"
+    local output=""
+    local exit_code=0
+
+    while [ "$attempt" -le "$COMMAND_RETRY_MAX_ATTEMPTS" ]; do
+        if output=$("$@" 2>&1); then
+            printf "%s" "$output"
+            return 0
+        fi
+
+        exit_code=$?
+        if [ "$attempt" -ge "$COMMAND_RETRY_MAX_ATTEMPTS" ]; then
+            printf "%s" "$output"
+            return "$exit_code"
+        fi
+
+        echo "⚠️  $label failed (attempt $attempt/$COMMAND_RETRY_MAX_ATTEMPTS): $output" >&2
+        echo "⏳ Retrying $label in ${delay}s..." >&2
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
+
+    printf "%s" "$output"
+    return "$exit_code"
 }
 
 run_claude_provider_iteration() {
