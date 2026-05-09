@@ -163,7 +163,7 @@ continuous-claude --prompt "add unit tests until all code is covered" --max-dura
 - `--dry-run`: Simulate execution without making changes
 - `--completion-signal <phrase>`: Phrase that agents output when entire project is complete (default: `CONTINUOUS_CLAUDE_PROJECT_COMPLETE`)
 - `--completion-threshold <num>`: Number of consecutive completion signals required to stop early (default: `3`)
-- `-r, --review-prompt`: Run a reviewer pass after each iteration to validate changes (e.g., run build/lint/tests and fix any issues)
+- `-r, --review-prompt [text]`: Run a reviewer pass after each iteration to validate changes. If you omit the text, Continuous Claude uses a comprehensive default review prompt that reviews the diff, runs available checks, simplifies changed code, and verifies the app where relevant.
 
 Any additional flags you provide that are not recognized by `continuous-claude` will be automatically forwarded to the selected provider command. You can also use `--` to explicitly stop parsing `continuous-claude` options and forward the rest to the provider CLI.
 
@@ -238,6 +238,9 @@ continuous-claude -p "fix all bugs" -m 20 --completion-signal "ALL_BUGS_FIXED" -
 
 # Use a reviewer to validate and fix changes after each iteration
 continuous-claude -p "add new feature" -m 5 -r "Run npm test and npm run lint, fix any failures"
+
+# Use the default reviewer prompt
+continuous-claude -p "add new feature" -m 5 -r
 
 # Explicitly specify owner and repo (useful if git remote is not set up or not a GitHub repo)
 continuous-claude -p "add features" -m 5 --owner myuser --repo myproject
