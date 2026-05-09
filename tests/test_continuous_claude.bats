@@ -57,6 +57,7 @@ require_pwsh() {
     assert_success
     assert_output --partial "Continuous Claude PowerShell"
     assert_output --partial "--review-prompt [text]"
+    assert_output --partial "--knowledge-file <file>"
     assert_output --partial "--stall-threshold <number>"
 }
 
@@ -118,6 +119,12 @@ require_pwsh() {
 
     assert_failure
     assert_output --partial "--stall-threshold is not supported by the native PowerShell runner yet"
+
+    run pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PS_SCRIPT_PATH" \
+        -p "test" -m 1 --knowledge-file CLAUDE.md
+
+    assert_failure
+    assert_output --partial "--knowledge-file is not supported by the native PowerShell runner yet"
 }
 
 @test "parse_arguments handles required flags" {
@@ -201,6 +208,13 @@ require_pwsh() {
     assert_equal "$COMMAND_RETRY_BASE_DELAY" "2"
 }
 
+@test "parse_arguments handles knowledge-file flag" {
+    source "$SCRIPT_PATH"
+    parse_arguments --knowledge-file CLAUDE.md
+
+    assert_equal "$KNOWLEDGE_FILE" "CLAUDE.md"
+}
+
 @test "validate_arguments fails with invalid command-retry-max" {
     source "$SCRIPT_PATH"
     PROMPT="test"
@@ -235,6 +249,75 @@ require_pwsh() {
 
     assert_success
     assert_output 'Create a `CUSTOM_NOTES.md` file with relevant context and instructions for the next iteration.'
+}
+
+@test "render_knowledge_prompt uses current knowledge-file value" {
+    source "$SCRIPT_PATH"
+    KNOWLEDGE_FILE="CLAUDE.md"
+
+    run render_knowledge_prompt "$PROMPT_KNOWLEDGE_CREATE_NEW"
+
+    assert_success
+    assert_output 'Create a `CLAUDE.md` file with durable project knowledge learned during this iteration.'
+}
+
+@test "execute_single_iteration includes durable knowledge context and update prompt" {
+    source "$SCRIPT_PATH"
+
+    PROMPT="Improve the project"
+    ENABLE_COMMITS="false"
+    NOTES_FILE="$BATS_TEST_TMPDIR/notes.md"
+    KNOWLEDGE_FILE="$BATS_TEST_TMPDIR/CLAUDE.md"
+    ERROR_LOG="$BATS_TEST_TMPDIR/error.log"
+    local prompt_file="$BATS_TEST_TMPDIR/prompt.txt"
+
+    echo "Next step: add tests" > "$NOTES_FILE"
+    echo "Use pnpm test for verification." > "$KNOWLEDGE_FILE"
+
+    function git() {
+        case "$1 $2 $3" in
+            "rev-parse --abbrev-ref HEAD")
+                echo "main"
+                return 0
+                ;;
+            "rev-parse --git-dir ")
+                return 0
+                ;;
+            "diff --quiet --ignore-submodules=dirty")
+                return 0
+                ;;
+            "diff --cached --quiet")
+                return 0
+                ;;
+            "ls-files --others --exclude-standard")
+                echo ""
+                return 0
+                ;;
+        esac
+        return 0
+    }
+    export -f git
+
+    function run_agent_iteration() {
+        printf "%s" "$1" > "$prompt_file"
+        echo '{"result":"Work done","total_cost_usd":0}'
+        return 0
+    }
+    export -f run_agent_iteration
+    export prompt_file
+
+    run execute_single_iteration 1
+
+    assert_success
+    assert [ -f "$prompt_file" ]
+    run grep -q "DURABLE PROJECT KNOWLEDGE" "$prompt_file"
+    assert_success
+    run grep -q "Use pnpm test for verification." "$prompt_file"
+    assert_success
+    run grep -q "DURABLE KNOWLEDGE RECORDING" "$prompt_file"
+    assert_success
+    run grep -q "Update the \`$KNOWLEDGE_FILE\` file with durable project knowledge" "$prompt_file"
+    assert_success
 }
 
 @test "validate_arguments fails without prompt" {
@@ -3070,6 +3153,7 @@ require_pwsh() {
     assert_output --partial "--comment-review-max"
     assert_output --partial "--command-retry-max"
     assert_output --partial "--command-retry-base-delay"
+    assert_output --partial "--knowledge-file"
     assert_output --partial "--stall-threshold"
     assert_output --partial "--review-prompt [text]"
     assert_output --partial "Uses a comprehensive default review prompt"

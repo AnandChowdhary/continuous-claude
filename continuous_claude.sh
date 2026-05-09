@@ -7,6 +7,7 @@ ADDITIONAL_FLAGS="--dangerously-skip-permissions --output-format stream-json --v
 CODEX_ADDITIONAL_FLAGS="--json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check"
 
 NOTES_FILE="SHARED_TASK_NOTES.md"
+KNOWLEDGE_FILE=""
 AUTO_UPDATE=false
 DISABLE_UPDATES=false
 AGENT_PROVIDER="${CONTINUOUS_CLAUDE_PROVIDER:-claude}"
@@ -48,6 +49,20 @@ The file should NOT include:
 - Lists of completed work or full reports
 - Information that can be discovered by running tests/coverage
 - Unnecessary details"
+
+# shellcheck disable=SC2016
+PROMPT_KNOWLEDGE_UPDATE_EXISTING='Update the `$KNOWLEDGE_FILE` file with durable project knowledge learned during this iteration.'
+
+# shellcheck disable=SC2016
+PROMPT_KNOWLEDGE_CREATE_NEW='Create a `$KNOWLEDGE_FILE` file with durable project knowledge learned during this iteration.'
+
+PROMPT_KNOWLEDGE_GUIDELINES="
+
+This file is long-lived project memory for future AI and human developers. It should:
+
+- Capture reusable conventions, commands, architecture decisions, pitfalls, and style preferences
+- Stay laconic and information dense
+- Avoid per-iteration status logs, completed-work summaries, and facts that are easy to rediscover"
 
 PROMPT_REVIEWER_CONTEXT="## CODE REVIEW CONTEXT
 
@@ -233,6 +248,7 @@ OPTIONAL FLAGS:
     --git-branch-prefix <prefix>  Branch prefix for iterations (default: "continuous-claude/")
     --merge-strategy <strategy>   PR merge strategy: squash, merge, or rebase (default: "squash")
     --notes-file <file>           Shared notes file for iteration context (default: "SHARED_TASK_NOTES.md")
+    --knowledge-file <file>       Durable project knowledge file to maintain (for example: "CLAUDE.md")
     --worktree <name>             Run in a git worktree for parallel execution (creates if needed)
     --worktree-base-dir <path>    Base directory for worktrees (default: "../continuous-claude-worktrees")
     --cleanup-worktree            Remove worktree after completion
@@ -420,6 +436,11 @@ is_positive_number() {
 render_notes_prompt() {
     local template="$1"
     echo "${template//\$NOTES_FILE/$NOTES_FILE}"
+}
+
+render_knowledge_prompt() {
+    local template="$1"
+    echo "${template//\$KNOWLEDGE_FILE/$KNOWLEDGE_FILE}"
 }
 
 get_latest_version() {
@@ -913,6 +934,10 @@ parse_arguments() {
                 ;;
             --notes-file)
                 NOTES_FILE="$2"
+                shift 2
+                ;;
+            --knowledge-file)
+                KNOWLEDGE_FILE="$2"
                 shift 2
                 ;;
             --worktree)
@@ -2966,6 +2991,18 @@ $notes_content
 "
     fi
 
+    if [ -n "$KNOWLEDGE_FILE" ] && [ -f "$KNOWLEDGE_FILE" ]; then
+        local knowledge_content
+        knowledge_content=$(cat "$KNOWLEDGE_FILE")
+        enhanced_prompt+="## DURABLE PROJECT KNOWLEDGE
+
+The following is from $KNOWLEDGE_FILE, maintained across iterations as long-lived project knowledge:
+
+$knowledge_content
+
+"
+    fi
+
     enhanced_prompt+="## ITERATION NOTES
 
 "
@@ -2977,6 +3014,21 @@ $notes_content
     fi
     
     enhanced_prompt+="$PROMPT_NOTES_GUIDELINES"
+
+    if [ -n "$KNOWLEDGE_FILE" ]; then
+        enhanced_prompt+="
+
+## DURABLE KNOWLEDGE RECORDING
+
+"
+        if [ -f "$KNOWLEDGE_FILE" ]; then
+            enhanced_prompt+="$(render_knowledge_prompt "$PROMPT_KNOWLEDGE_UPDATE_EXISTING")"
+        else
+            enhanced_prompt+="$(render_knowledge_prompt "$PROMPT_KNOWLEDGE_CREATE_NEW")"
+        fi
+
+        enhanced_prompt+="$PROMPT_KNOWLEDGE_GUIDELINES"
+    fi
 
     local agent_display
     agent_display=$(get_agent_display_name)
