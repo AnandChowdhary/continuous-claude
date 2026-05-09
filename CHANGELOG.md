@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [v0.24.0] - 2026-05-09
+
+### What's Changed
+
+- :sparkles: Add default reviewer prompt for empty review flag (#56) (a53d764)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.23.0...v0.24.0
+
+
 ## [v0.23.0] - 2026-05-09
 
 ### What's Changed
