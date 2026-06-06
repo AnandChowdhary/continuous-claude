@@ -145,6 +145,12 @@ Before using `continuous-claude`, you need:
 2. **[GitHub CLI](https://cli.github.com)** - Authenticate with `gh auth login`
 3. **jq** - Install with `brew install jq` (macOS) or `apt-get install jq` (Linux). The PowerShell runner uses native JSON parsing and does not require `jq`.
 
+### Platform support
+
+Continuous Claude currently automates the GitHub pull request workflow. It detects GitHub remotes, creates PRs with `gh pr create`, waits for GitHub checks and reviews, and merges through GitHub's API.
+
+Self-hosted Git forges such as Gitea are not supported yet because they use different pull request, check, and review APIs. You can still run Continuous Claude in a local-only mode with `--disable-commits` or on the current branch with `--disable-branches`, but full PR automation requires a GitHub repository today.
+
 ### Usage
 
 ```bash
