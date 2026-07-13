@@ -2086,13 +2086,18 @@ run_claude_provider_iteration() {
     # Use temporary files for both to ensure synchronous capture
     local temp_stdout=$(mktemp)
     local temp_stderr=$(mktemp)
+    local temp_stderr_fifo="${temp_stderr}.fifo"
     local exit_code=0
+
+    mkfifo "$temp_stderr_fifo"
+    tee "$temp_stderr" < "$temp_stderr_fifo" >&2 &
+    local stderr_tee_pid=$!
 
     # Stream stdout (stream-json) to terminal in human-readable format while capturing raw JSON
     # Filter extracts text from assistant messages for display
     set -o pipefail
     # shellcheck disable=SC2086
-    claude -p "$prompt" $flags "${EXTRA_AGENT_FLAGS[@]}" 2> >(tee "$temp_stderr" >&2) | \
+    claude -p "$prompt" $flags "${EXTRA_AGENT_FLAGS[@]}" 2>"$temp_stderr_fifo" | \
         tee "$temp_stdout" | \
         while IFS= read -r line; do
             # Extract text from assistant messages for human-readable display
@@ -2213,8 +2218,9 @@ run_claude_provider_iteration() {
     exit_code=${PIPESTATUS[0]}
     set +o pipefail
 
-    # Wait for background processes to complete
-    wait
+    # Wait for stderr to be fully captured before inspecting the error log.
+    wait "$stderr_tee_pid"
+    rm -f "$temp_stderr_fifo"
 
     # Output captured stdout (JSON result) so caller can capture it
     if [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
@@ -2280,11 +2286,16 @@ run_codex_provider_iteration() {
 
     local temp_stdout=$(mktemp)
     local temp_stderr=$(mktemp)
+    local temp_stderr_fifo="${temp_stderr}.fifo"
     local exit_code=0
+
+    mkfifo "$temp_stderr_fifo"
+    tee "$temp_stderr" < "$temp_stderr_fifo" >&2 &
+    local stderr_tee_pid=$!
 
     set -o pipefail
     # shellcheck disable=SC2086
-    codex exec $flags -C "$PWD" "${EXTRA_AGENT_FLAGS[@]}" "$prompt" 2> >(tee "$temp_stderr" >&2) | \
+    codex exec $flags -C "$PWD" "${EXTRA_AGENT_FLAGS[@]}" "$prompt" 2>"$temp_stderr_fifo" | \
         tee "$temp_stdout" | \
         while IFS= read -r line; do
             text=$(echo "$line" | jq -r '
@@ -2323,7 +2334,8 @@ run_codex_provider_iteration() {
     exit_code=${PIPESTATUS[0]}
     set +o pipefail
 
-    wait
+    wait "$stderr_tee_pid"
+    rm -f "$temp_stderr_fifo"
 
     if [ -f "$temp_stdout" ] && [ -s "$temp_stdout" ]; then
         cat "$temp_stdout"
