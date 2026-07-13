@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## [v0.24.8] - 2026-07-13
+
+### What's Changed
+
+- :bug: Synchronize provider stderr capture (f007dd4)
+- :construction_worker: Update checkout action to v7 (80892b5)
+- :pencil: Document GitHub platform support (#64) (dfd88a9)
+
+**Full Changelog**: https://github.com/AnandChowdhary/continuous-claude/compare/v0.24.7...v0.24.8
+
+
 ## [v0.24.7] - 2026-05-09
 
 ### What's Changed
