@@ -1495,18 +1495,18 @@ check_pr_comments() {
     local iteration_display="$4"
     local since="$5"  # Optional ISO 8601 timestamp to only count comments after this time
 
-    local review_comments issue_comments
+    local review_comments issue_comments review_filter='length' issue_endpoint="repos/$owner/$repo/issues/$pr_number/comments"
 
     if [ -n "$since" ]; then
-        # Filter inline review comments by created_at > since
-        review_comments=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" --jq "[.[] | select(.created_at > \"$since\")] | length" 2>/dev/null || echo "0")
-        # Filter PR-level comments by created_at > since
-        issue_comments=$(gh api "repos/$owner/$repo/issues/$pr_number/comments?since=$since" --jq 'length' 2>/dev/null || echo "0")
-    else
-        # Count all comments
-        review_comments=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" --jq 'length' 2>/dev/null || echo "0")
-        issue_comments=$(gh api "repos/$owner/$repo/issues/$pr_number/comments" --jq 'length' 2>/dev/null || echo "0")
+        # The inline-comments endpoint has no since parameter; filter each page.
+        review_filter="[.[] | select(.created_at > \"$since\")] | length"
+        issue_endpoint="$issue_endpoint?since=$since"
     fi
+
+    # gh --jq runs once per page, so sum the page counts rather than using
+    # only GitHub's first (30-comment) page.
+    review_comments=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" --paginate --jq "$review_filter" 2>/dev/null | jq -s 'add // 0')
+    issue_comments=$(gh api "$issue_endpoint" --paginate --jq 'length' 2>/dev/null | jq -s 'add // 0')
 
     local total_comments=$((review_comments + issue_comments))
 

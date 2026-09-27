@@ -3352,6 +3352,29 @@ require_pwsh() {
     assert_output --partial "Found 3 comment(s)"
 }
 
+@test "check_pr_comments counts comments on every API page" {
+    source "$SCRIPT_PATH"
+
+    function gh() {
+        if [ "$1" = "api" ]; then
+            # Both endpoints have comments on a second page. Without pagination
+            # GitHub would expose only the first page to the caller.
+            if [[ " $* " == *" --paginate "* ]]; then
+                printf '1\n1\n'
+            else
+                echo "1"
+            fi
+            return 0
+        fi
+        return 1
+    }
+    export -f gh
+
+    run check_pr_comments "123" "owner" "repo" "[1/5]"
+    assert_success
+    assert_output --partial "Found 4 comment(s) on PR #123 (2 inline, 2 general)"
+}
+
 @test "check_pr_comments returns 1 when no comments" {
     source "$SCRIPT_PATH"
 
