@@ -1505,8 +1505,14 @@ check_pr_comments() {
 
     # gh --jq runs once per page, so sum the page counts rather than using
     # only GitHub's first (30-comment) page.
-    review_comments=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" --paginate --jq "$review_filter" 2>/dev/null | jq -s 'add // 0')
-    issue_comments=$(gh api "$issue_endpoint" --paginate --jq 'length' 2>/dev/null | jq -s 'add // 0')
+    if ! review_comments=$(set -o pipefail; gh api "repos/$owner/$repo/pulls/$pr_number/comments" --paginate --jq "$review_filter" 2>/dev/null | jq -s 'add // 0'); then
+        echo "⚠️  $iteration_display Could not read PR comments; leaving PR #$pr_number open" >&2
+        return 2
+    fi
+    if ! issue_comments=$(set -o pipefail; gh api "$issue_endpoint" --paginate --jq 'length' 2>/dev/null | jq -s 'add // 0'); then
+        echo "⚠️  $iteration_display Could not read PR comments; leaving PR #$pr_number open" >&2
+        return 2
+    fi
 
     local total_comments=$((review_comments + issue_comments))
 
@@ -1799,6 +1805,11 @@ continuous_claude_commit() {
                 git branch -D "$branch_name" >/dev/null 2>&1 || true
                 return 1
             fi
+        elif [ "$?" -eq 2 ]; then
+            # An incomplete comment lookup must never be interpreted as approval.
+            echo "⚠️  $iteration_display Comment lookup failed; leaving PR #$pr_number open for review" >&2
+            git checkout "$main_branch" >/dev/null 2>&1
+            return 1
         fi
     fi
 
