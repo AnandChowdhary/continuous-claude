@@ -2358,6 +2358,8 @@ require_pwsh() {
 
 @test "continuous_claude_commit creates PR when branch already has committed changes" {
     source "$SCRIPT_PATH"
+    # This test mocks PR creation, not the separate comment-review API.
+    COMMENT_REVIEW_ENABLED="false"
     
     ENABLE_COMMITS="true"
     DRY_RUN="false"
@@ -2422,8 +2424,52 @@ require_pwsh() {
     refute_output --partial "claude should not be called"
 }
 
+@test "continuous_claude_commit leaves PR open when comment lookup fails" {
+    source "$SCRIPT_PATH"
+    ENABLE_COMMITS="true"
+    DRY_RUN="false"
+    COMMENT_REVIEW_ENABLED="true"
+    GITHUB_OWNER="user"
+    GITHUB_REPO="repo"
+
+    function git() {
+        case "$1 $2 $3 $4" in
+            "rev-parse --git-dir"*) return 0 ;;
+            "diff --quiet --ignore-submodules=dirty"*) return 0 ;;
+            "diff --cached --quiet --ignore-submodules=dirty"*) return 0 ;;
+            "ls-files --others --exclude-standard"*) return 0 ;;
+            "rev-list --count main..test-branch"*) echo "1"; return 0 ;;
+            "log -1 --format=%B"*) echo "Test commit message"; return 0 ;;
+            "push --set-upstream"*) return 0 ;;
+            "push -u origin test-branch"*) return 0 ;;
+            checkout*) return 0 ;;
+        esac
+        return 1
+    }
+    function gh() {
+        if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+            echo "https://github.com/user/repo/pull/123"
+            return 0
+        fi
+        echo "Unexpected GitHub call: $*" >&2
+        return 1
+    }
+    function wait_for_pr_checks() { return 0; }
+    function check_pr_comments() { return 2; }
+    function merge_pr_and_cleanup() { echo "MERGE CALLED" >&2; return 0; }
+    function sleep() { return 0; }
+    export -f git gh wait_for_pr_checks check_pr_comments merge_pr_and_cleanup sleep
+
+    run continuous_claude_commit "(1/1)" "test-branch" "main"
+    assert_failure
+    assert_output --partial "Comment lookup failed; leaving PR #123 open"
+    refute_output --partial "MERGE CALLED"
+    refute_output --partial "Unexpected GitHub call"
+}
+
 @test "continuous_claude_commit retries transient PR creation failures" {
     source "$SCRIPT_PATH"
+    COMMENT_REVIEW_ENABLED="false"
 
     ENABLE_COMMITS="true"
     DRY_RUN="false"
@@ -3350,6 +3396,46 @@ require_pwsh() {
     run check_pr_comments "123" "owner" "repo" "[1/5]"
     assert_success
     assert_output --partial "Found 3 comment(s)"
+}
+
+@test "check_pr_comments counts comments on every API page" {
+    source "$SCRIPT_PATH"
+
+    function gh() {
+        if [ "$1" = "api" ]; then
+            # Both endpoints have comments on a second page. Without pagination
+            # GitHub would expose only the first page to the caller.
+            if [[ " $* " == *" --paginate "* ]]; then
+                printf '1\n1\n'
+            else
+                echo "1"
+            fi
+            return 0
+        fi
+        return 1
+    }
+    export -f gh
+
+    run check_pr_comments "123" "owner" "repo" "[1/5]"
+    assert_success
+    assert_output --partial "Found 4 comment(s) on PR #123 (2 inline, 2 general)"
+}
+
+@test "check_pr_comments aborts when a later API page fails" {
+    source "$SCRIPT_PATH"
+
+    function gh() {
+        if [ "$1" = "api" ]; then
+            printf '0\n'
+            return 1
+        fi
+        return 1
+    }
+    export -f gh
+
+    run check_pr_comments "123" "owner" "repo" "[1/5]"
+    [ "$status" -eq 2 ]
+    assert_output --partial "Could not read PR comments"
 }
 
 @test "check_pr_comments returns 1 when no comments" {
