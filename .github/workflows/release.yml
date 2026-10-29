@@ -24,8 +24,24 @@ jobs:
       - name: Run tests
         run: ./tests/libs/bats/bin/bats tests/test_continuous_claude.bats
 
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Smoke test native PowerShell runner
+        shell: pwsh
+        run: |
+          $version = & ./continuous_claude.ps1 --version
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^continuous-claude PowerShell version v\d+\.\d+\.\d+$') {
+            throw "PowerShell version command failed: $version"
+          }
+          $helpText = (& ./continuous_claude.ps1 --help) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $helpText -notmatch 'Continuous Claude PowerShell' -or $helpText -notmatch '--review-provider') {
+            throw 'PowerShell help command failed'
+          }
+
   release:
-    needs: test
+    needs: [test, windows-smoke]
     runs-on: ubuntu-latest
 
     steps:
